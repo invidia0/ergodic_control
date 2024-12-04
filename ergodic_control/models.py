@@ -40,14 +40,14 @@ class SecondOrderAgent:
         x, # initial position
         max_dx=1, # maximum velocity
         max_ddx=0.2, # maximum acceleration
+        dt=1, # time step
     ):
         self.x = np.array(x)  # position
-        # determine which dimesnion we are in from given position
         self.nbVarX = len(x)
         self.dx = np.zeros(self.nbVarX)  # velocity
 
         self.t = 0  # time
-        self.dt = 1  # time step
+        self.dt = dt  # time step
 
         self.max_dx = max_dx
         self.max_ddx = max_ddx
@@ -74,3 +74,23 @@ class SecondOrderAgent:
         # clamp velocity if needed
         if np.linalg.norm(self.dx) > self.max_dx:
             self.dx = self.max_dx * self.dx / np.linalg.norm(self.dx)
+
+class SecondOrderDubinAgent:
+    def __init__(
+        self,
+        x, # initial position
+        max_dx=1, # maximum velocity
+        max_ddx=0.2, # maximum acceleration
+        theta=0, # initial orientation
+        max_dtheta=0.1, # maximum angular velocity
+        max_ddtheta=0.05, # maximum angular acceleration
+        dt=1, # time step
+        ):
+        
+        self.x = np.array(x)
+        self.theta = theta
+
+        self.nbVarX = len(x)
+
+        
+        

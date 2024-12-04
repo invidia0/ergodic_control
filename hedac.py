@@ -3,10 +3,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
-from matplotlib.collections import LineCollection
-from matplotlib import colormaps
 from ergodic_control import models, utilities
-from sklearn.mixture import GaussianMixture
 import json
 
 warnings.filterwarnings("ignore")
@@ -32,14 +29,17 @@ param.L = (param.xlim[1] - param.xlim[0]) * 2  # Size of [-xlim(2),xlim(2)]
 param.omega = 2 * np.pi / param.L  # Frequency of the domain
 param.alpha = np.array(param.alpha) * param.diffusion
 
-fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+fig, ax = plt.subplots(1, 3, figsize=(12, 5))
 
 for a in ax:
-    a.set_xlim([0, param.width])
-    a.set_ylim([0, param.height])
+    a.set_xlim([0, param.xlim[1]])
+    a.set_ylim([0, param.xlim[1]])
     a.set_aspect('equal')
     a.set_xticks([])
     a.set_yticks([])
+
+# 3D Plot of the source term
+ax[2] = fig.add_subplot(133, projection='3d')
 
 """
 ===============================
@@ -75,9 +75,9 @@ for i in range(param.nbAgents):
     # x0 = np.random.uniform(0, param.nbResX, 2)
     x0 = np.array([50, 50])
     agent = models.SecondOrderAgent(x=x0, 
-                                    nbDataPoints=param.nbDataPoints,
                                     max_dx=param.max_dx,
-                                    max_ddx=param.max_ddx)
+                                    max_ddx=param.max_ddx,
+                                    dt=param.dt)
     rgb = np.random.uniform(0, 1, 3)
     agent.color = np.concatenate((rgb, [1.0]))
     agents.append(agent)
@@ -96,15 +96,19 @@ param.height, param.width = G.shape
 
 param.area = param.dx * param.width * param.dx * param.height
 
+param.beta = param.beta / param.area # Eq. 17 - Beta normalized 
+param.local_cooling = param.local_cooling / param.area # Eq. 16 - Local cooling normalized
+
 coverage_density = np.zeros((param.height, param.width))
 heat = np.array(G) # The heat is the goal density
 
 max_diffusion = np.max(param.alpha)
 param.dt = min(
-    1.0, (param.dx * param.dx) / (4.0 * max_diffusion)
+    0.2, (param.dx * param.dx) / (4.0 * max_diffusion)
 )  # for the stability of implicit integration of Heat Equation
-coverage_block = utilities.agent_block(param.nbVarX, param.min_kernel_val, param.agent_radius)
-cooling_block = utilities.agent_block(param.nbVarX, param.min_kernel_val, param.cooling_radius)
+coverage_block = utilities.agent_block(param.eps, param.nbVarX, param.min_kernel_val, param.agent_radius)
+# coverage_block = np.ones_like(coverage_block)
+# cooling_block = utilities.agent_block(param.nbVarX, param.min_kernel_val, param.cooling_radius)
 param.kernel_size = coverage_block.shape[0]
 
 """
@@ -134,16 +138,15 @@ for t in range(param.nbDataPoints):
         ]
 
         if param.local_cooling != 0:
-            local_cooling[row_indices, col_indices] += cooling_block[
+            local_cooling[row_indices, col_indices] += coverage_block[
                 row_start_kernel : row_start_kernel + num_kernel_rows,
                 col_start_kernel : col_start_kernel + num_kernel_cols,
             ]
-        local_cooling = utilities.normalize_mat(local_cooling)
-    
-    coverage = utilities.normalize_mat(coverage_density)
+        local_cooling = utilities.normalize_mat(local_cooling) # Eq. 15 - Local cooling normalized
+  
+    coverage = utilities.normalize_mat(coverage_density) # Eq. 4 - Coverage density normalized
 
     diff = G - coverage # Eq. 6 - Difference between the goal density and the coverage density
-    sign = np.sign(diff)
     source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
     source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
@@ -165,9 +168,11 @@ for t in range(param.nbDataPoints):
         / (param.dx * param.dx)
         + param.source_strength * utilities.offset(source, 0, 0)
         - param.local_cooling * utilities.offset(local_cooling, 0, 0)
-    ) / param.beta + utilities.offset(heat, 0, 0)
+        - param.beta * utilities.offset(heat, 0, 0)
+    )  + utilities.offset(heat, 0, 0)
 
     heat = current_heat.astype(np.float32)
+    
     gradient_y, gradient_x = np.gradient(heat, 1, 1) # Gradient of the heat
 
     for agent in agents:
@@ -182,19 +187,22 @@ for t in range(param.nbDataPoints):
     # Plot the agents
     ax[0].cla()
     ax[1].cla()
+    ax[2].cla()
+    # ax[0].imshow(pdf_gt, cmap='Reds', origin='lower')
+    # ax[0].scatter(agents[0].x[0], agents[0].x[1], c='tab:blue', s=100, marker='o')
+    # ax[0].plot(agents[0].x_hist[:, 0], agents[0].x_hist[:, 1], c='black', alpha=1, lw=2)
 
-    ax[0].contourf(pdf_gt, cmap='Reds')
-    ax[0].scatter(agents[0].x[0], agents[0].x[1], c='tab:blue', s=100, marker='o', edgecolors='black')
-    ax[0].plot(agents[0].x_hist[:, 0], agents[0].x_hist[:, 1], c='black', alpha=1, lw=2)
-    ax[0].set_title('Ground Truth PDF. Time: {}'.format(t))
-
-    # gradient_y, gradient_x = np.gradient(heat)
-    ax[1].quiver(grids_x*100, grids_y*100, gradient_x, gradient_y, scale=100, scale_units='inches')
-    ax[1].scatter(agents[0].x[0], agents[0].x[1], c='tab:blue', s=100, marker='o', edgecolors='black')
+    strength = np.sqrt(gradient_x ** 2 + gradient_y ** 2) # Quiver strength (magnitude of the gradient) for plotting 
+    Q = ax[1].quiver(grids_x*100, grids_y*100, gradient_x, gradient_y, strength, cmap='plasma', scale = 100, scale_units='inches')
+    ax[1].scatter(agents[0].x[0], agents[0].x[1], c='tab:blue', s=100, marker='o')
+    cbar = plt.colorbar(Q, ax=ax[1], fraction=0.046, pad=0.04)
     # Draw the agent block
     ax[1].add_patch(plt.Rectangle((agents[0].x[0] - param.agent_radius, 
                                    agents[0].x[1] - param.agent_radius), 
                                    2 * param.agent_radius, 2 * param.agent_radius, 
                                    fill=None, edgecolor='tab:blue', lw=2))
-
-    plt.pause(0.001)
+    # 3D Plot of the source term
+    ax[2].plot_surface(grids_x, grids_y, heat.reshape(param.nbResX, param.nbResY), cmap='viridis')
+    plt.suptitle(f'Timestep: {t}')
+    plt.pause(0.0001) 
+    cbar.remove() 

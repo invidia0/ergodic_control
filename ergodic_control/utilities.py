@@ -226,25 +226,28 @@ def rbf(mean, x, eps):
     """
     Radial basis function w/ Gaussian Kernel
     """
-    d = x - mean  # radial distance
+    d = mean - x  # radial distance
     l2_norm_squared = np.dot(d, d)
-    # eps is the shape parameter that can be interpreted as the inverse of the radius
+
     return np.exp(-eps * l2_norm_squared)
 
-def agent_block(nbVarX, min_val, agent_radius):
+def agent_block(eps, nbVarX, min_val, agent_radius):
     """
     A matrix representing the shape of an agent (e.g, RBF with Gaussian kernel). 
     min_val is the upper bound on the minimum value of the agent block.
     
-    RBF(d) = exp(-eps * d^2)
-
+    RBF(d) = exp(-(eps * d)^2)
+    
+    eps = 1 / agent_radius 
+    is the shape parameter that can be interpreted as the inverse of the radius
+    
     Example usage:
     If min_val = 0.1 and agent_radius = 2, the function creates a matrix where:
         - RBF values are computed up to where the minimum value is 0.1.
         - The block size reflects the radius of influence based on the Gaussian decay rate.
     """
 
-    eps = 1.0 / agent_radius  # shape parameter of the RBF
+    # eps = 1.0 / agent_radius  # shape parameter of the RBF (supposed to be squared)
     l2_sqrd = (
         -np.log(min_val) / eps
     )  # squared maximum distance from the center of the agent block
@@ -264,7 +267,7 @@ def agent_block(nbVarX, min_val, agent_radius):
     center = np.array([num_rows // 2, num_cols // 2])
     for i in range(num_rows):
         for j in range(num_cols):
-            block[i, j] = rbf(np.array([j, i]), center, eps)
+            block[i, j] = rbf(center, np.array([j, i]), eps)
     # we hope this value is close to zero 
     print(f"Minimum element of the block: {np.min(block)}" +
           " values smaller than this assumed as zero")
@@ -372,38 +375,8 @@ def calculate_gradient(param, agent, gradient_x, gradient_y):
 
     return gradient
 
-def visualize_pdfs(pdfs: dict, params):
+def fov(param, horizon, angle):
     """
-    Visualize the ground truth and estimated PDFs.
-
-    Args:
-        pdfs (dict): A dictionary containing the ground truth and estimated PDFs.
-        params (dict): A dictionary containing the parameters for the simulation.
+    Define the FOV of the agent
     """
-    import matplotlib.pyplot as plt
-
-    fig, axs = plt.subplots(1, len(pdfs), figsize=(15, 5))
-
-    cmaps = ['Greens', 'Reds', 'Blues']
-
-    for i, (ax, (title, pdf)) in enumerate(zip(axs, pdfs.items())):
-        ax.set_aspect('equal')
-        ax.set_xlim(0.0, params.xlim[1])
-        ax.set_ylim(0.0, params.xlim[1])
-        ax.set_title(title)
-        ax.contourf(
-            np.linspace(0, params.xlim[1], params.nbResX),
-            np.linspace(0, params.xlim[1], params.nbResY),
-            pdf,
-            cmap=cmaps[i]
-        )
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        cbar = plt.colorbar(ax.contourf(
-            np.linspace(0, params.xlim[1], params.nbResX),
-            np.linspace(0, params.xlim[1], params.nbResY),
-            pdf,
-            cmap=cmaps[i]
-        ), ax=ax, fraction=0.046, pad=0.04)
-
-    return fig, axs
+    
