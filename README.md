@@ -12,9 +12,17 @@ Download the code and install the dependencies:
 
 ```bash
 git clone https://github.com/invidia0/ergodic_control.git
+```
+```bash
 cd ergodic_control
+```
+```bash
 python3 -m venv .env
+```
+```bash
 source .env/bin/activate
+```
+```bash
 pip3 install -r requirements.txt
 ```
 
@@ -41,11 +49,10 @@ python3 smc.py
 
 ### HEDAC
 The HEDAC implementation refers to the paper:
-```bibtex
+
 [1] S. Ivić, B. Crnković and I. Mezić, "Ergodicity-Based Cooperative Multiagent Area Coverage via a Potential Field," in IEEE Transactions on Cybernetics, vol. 47, no. 8, pp. 1983-1993, Aug. 2017, doi: 10.1109/TCYB.2016.2634400.
-```
+
 ### SMC
 The SMC implementation refers to the paper:
-```bibtex
-[1] George Mathew, Igor Mezić, "Metrics for ergodicity and design of ergodic dynamics for multi-agent systems," Physica D: Nonlinear Phenomena, Volume 240, Issues 4–5, 2011, Pages 432-442, ISSN 0167-2789, https://doi.org/10.1016/j.physd.2010.10.010.
-```
+
+[2] George Mathew, Igor Mezić, "Metrics for ergodicity and design of ergodic dynamics for multi-agent systems," Physica D: Nonlinear Phenomena, Volume 240, Issues 4–5, 2011, Pages 432-442, ISSN 0167-2789, https://doi.org/10.1016/j.physd.2010.10.010.
