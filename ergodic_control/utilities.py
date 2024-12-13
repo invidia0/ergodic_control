@@ -1,6 +1,8 @@
 import numpy as np
 from matplotlib.collections import LineCollection
 from sklearn.mixture import GaussianMixture
+from shapely.geometry import Point, Polygon
+from matplotlib.path import Path
 import warnings
 
 def gauss_pdf(points, mean, covariance):
@@ -127,13 +129,15 @@ def hadamard_matrix(n: int) -> np.ndarray:
 
 def discrete_gmm(param):
     """
-    Same GMM as in ergodic_control_SMC.py
+    Mixture models for the analysis, edition, and synthesis of continuous time series
+    Sylvain Calinon
+
+    https://calinon.ch/papers/Calinon_MMchapter2019.pdf
     """
     # Discretize given GMM using Fourier basis functions
     rg = np.arange(0, param.nbFct, dtype=float)
     KX = np.zeros((param.nbVarX, param.nbFct, param.nbFct))
     KX[0, :, :], KX[1, :, :] = np.meshgrid(rg, rg)
-    # Mind the flatten() !!!
 
     # Explicit description of w_hat by exploiting the Fourier transform
     # properties of Gaussians (optimized version by exploiting symmetries)
@@ -218,7 +222,7 @@ def discrete_gmm_original(param):
         hk = np.sqrt(np.sum(np.square(fk_vals)) * dx * dy)
         fk_vals /= hk
         
-        pdf_recon += phik * fk_vals 
+        pdf_recon += phik * fk_vals
 
     return pdf_recon
 
@@ -231,7 +235,7 @@ def rbf(mean, x, eps):
 
     return np.exp(-eps * l2_norm_squared)
 
-def agent_block(eps, nbVarX, min_val, agent_radius):
+def agent_block(nbVarX, min_val, agent_radius):
     """
     A matrix representing the shape of an agent (e.g, RBF with Gaussian kernel). 
     min_val is the upper bound on the minimum value of the agent block.
@@ -247,7 +251,7 @@ def agent_block(eps, nbVarX, min_val, agent_radius):
         - The block size reflects the radius of influence based on the Gaussian decay rate.
     """
 
-    # eps = 1.0 / agent_radius  # shape parameter of the RBF (supposed to be squared)
+    eps = 1.0 / agent_radius  # shape parameter of the RBF (supposed to be squared)
     l2_sqrd = (
         -np.log(min_val) / eps
     )  # squared maximum distance from the center of the agent block
@@ -352,7 +356,6 @@ def calculate_gradient(param, agent, gradient_x, gradient_y):
     # note x axis corresponds to col and y axis corresponds to row
     col, row = adjusted_position.astype(int)
 
-
     gradient = np.zeros(2)
     # if agent is inside the grid, interpolate the gradient for agent position
     if row > 0 and row < param.height - 1 and col > 0 and col < param.width - 1:
@@ -375,8 +378,83 @@ def calculate_gradient(param, agent, gradient_x, gradient_y):
 
     return gradient
 
-def fov(param, horizon, angle):
+def draw_fov(pos, theta, fov, fov_depth):
     """
-    Define the FOV of the agent
-    """
+    This function returns a list of points that make up the field of view.
     
+    Parameters:
+    pos: list or array-like, position of the agent [x, y]
+    theta: float, heading angle of the agent in radians
+    fov: float, field of view in degrees (e.g., 90)
+    fov_depth: float, depth of the field of view
+    
+    Returns:
+    np.array: A numpy array of points representing the field of view in 2D space.
+    """
+    # Convert FOV from degrees to radians
+    fov_rad = np.radians(fov)
+    
+    # Calculate the angles for the left and right FOV boundaries
+    left_angle = theta + fov_rad / 2
+    right_angle = theta - fov_rad / 2
+    
+    # Calculate the end points of the FOV lines
+    left_point = [
+        pos[0] + fov_depth * np.cos(left_angle),
+        pos[1] + fov_depth * np.sin(left_angle)
+    ]
+    right_point = [
+        pos[0] + fov_depth * np.cos(right_angle),
+        pos[1] + fov_depth * np.sin(right_angle)
+    ]
+    
+    # The FOV is represented by a triangle: [position, left_point, right_point]
+    fov_points = [pos, left_point, right_point]
+    
+    return np.array(fov_points)
+
+
+def draw_fov_arc(pos, theta, fov, fov_depth, num_points=50):
+    """
+    This function returns a list of points along the arc that describes the field of view.
+    
+    Parameters:
+    pos: list or array-like, position of the agent [x, y]
+    theta: float, heading angle of the agent in radians
+    fov: float, field of view in degrees (e.g., 90)
+    fov_depth: float, depth of the field of view
+    num_points: int, number of points along the arc to describe the FOV
+    
+    Returns:
+    np.array: A numpy array of points representing the arc of the field of view in 2D space.
+    """
+    # Convert FOV from degrees to radians
+    fov_rad = np.radians(fov)
+    
+    # Calculate the angles for the left and right FOV boundaries
+    left_angle = theta + fov_rad / 2
+    right_angle = theta - fov_rad / 2
+    
+    # Generate points along the arc between left_angle and right_angle
+    angles = np.linspace(left_angle, right_angle, num_points)
+    
+    # Calculate the x and y coordinates for the points along the arc
+    arc_points = np.array([
+        [pos[0] + fov_depth * np.cos(angle), pos[1] + fov_depth * np.sin(angle)]
+        for angle in angles
+    ])
+    arc_points = np.vstack([pos, arc_points, pos])
+    return arc_points
+
+def simple_gaussian_fov_block(points, fov_arc, fov_depth, bounds):
+    fov_arc_clamped = np.clip(fov_arc, [bounds[0], bounds[1]], [bounds[2], bounds[3]])
+
+    poly = Path(fov_arc_clamped)
+    fov_points = np.ceil([point for point in points if poly.contains_point(point)]).astype(int)
+    fov_center = np.mean(fov_arc_clamped, axis=0)
+
+    prob = np.exp(-np.linalg.norm(fov_points - fov_center, axis=1) / (fov_depth / 3))
+
+    prob = (prob - np.min(prob)) / (np.max(prob) - np.min(prob))
+
+    return fov_points, prob
