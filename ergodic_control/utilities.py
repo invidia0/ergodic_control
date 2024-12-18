@@ -4,6 +4,21 @@ from sklearn.mixture import GaussianMixture
 from shapely.geometry import Point, Polygon
 from matplotlib.path import Path
 import warnings
+import time
+
+def timeit(method):
+    """
+    A decorator to measure the execution time of a function.
+    """
+    # Suppress 
+    return method
+    def timed(*args, **kw):
+        ts = time.time()
+        result = method(*args, **kw)
+        te = time.time()
+        print(f"{method.__name__} executed in: {te - ts:.6f} sec")
+        return result
+    return timed
 
 def gauss_pdf(points, mean, covariance):
   # Calculate the multivariate Gaussian probability
@@ -458,3 +473,133 @@ def simple_gaussian_fov_block(points, fov_arc, fov_depth, bounds):
     prob = (prob - np.min(prob)) / (np.max(prob) - np.min(prob))
 
     return fov_points, prob
+
+@timeit
+def init_fov(fov_deg, fov_depth):
+    """
+    This function returns a list of points that make up the field of view.
+    
+    Parameters:
+    pos: list or array-like, position of the agent [x, y] or an arbitrary initial position.
+    theta: float, heading angle of the agent in radians
+    fov: float, field of view in degrees (e.g., 90)
+    fov_depth: float, depth of the field of view
+    
+    Returns:
+    np.array: A numpy array of points representing the field of view in 2D space.
+    """
+    # Generate a triangle fov with the tip of the triangle in (0, 0)
+    fov_rad = np.radians(fov_deg)
+
+    # Calculate the angles for the left and right FOV boundaries
+    left_angle = fov_rad / 2
+    right_angle = -fov_rad / 2
+
+    # Calculate the end points of the FOV lines
+    left_point = [
+        fov_depth * np.cos(left_angle),
+        fov_depth * np.sin(left_angle)
+    ]
+    right_point = [
+        fov_depth * np.cos(right_angle),
+        fov_depth * np.sin(right_angle)
+    ]
+
+    return np.array([[0, 0], left_point, right_point])
+
+@timeit
+def insidepolygon(polygon, grid_step=1):
+    """
+    This function returns a list of points that lie within a polygon defined by its vertices.
+    """
+
+    xs=np.array(polygon[:,0], dtype=float)
+    ys=np.array(polygon[:,1], dtype=float)
+
+    # The possible range of coordinates that can be returned
+    x_range=np.arange(np.min(xs),np.max(xs), grid_step)
+    y_range=np.arange(np.min(ys),np.max(ys), grid_step)
+
+    # Set the grid of coordinates on which the triangle lies. The centre of the
+    # triangle serves as a criterion for what is inside or outside the triangle.
+    X,Y=np.meshgrid( x_range,y_range )
+    xc=np.mean(xs)
+    yc=np.mean(ys)
+
+    # From the array 'triangle', points that lie outside the triangle will be
+    # set to 'False'.
+    triangle = np.ones(X.shape,dtype=bool)
+    for i in range(len(polygon)):
+        ii=(i+1)%len(polygon)
+        if xs[i]==xs[ii]:
+            include = X *(xc-xs[i])/abs(xc-xs[i]) > xs[i] *(xc-xs[i])/abs(xc-xs[i])
+        else:
+            poly=np.poly1d([(ys[ii]-ys[i])/(xs[ii]-xs[i]),ys[i]-xs[i]*(ys[ii]-ys[i])/(xs[ii]-xs[i])])
+            include = Y *(yc-poly(xc))/abs(yc-poly(xc)) > poly(X) *(yc-poly(xc))/abs(yc-poly(xc))
+        triangle*=include
+
+    return np.array([X[triangle], Y[triangle]])
+
+def rotate_and_translate(fov_array, pos, theta):
+    rot_matrix = np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)]
+    ])
+    return np.dot(fov_array, rot_matrix.T) + pos
+
+@timeit
+def fov_coverage_block(points, fov_array, fov_depth):
+    """
+    This function calculates the probability of each grid point within the field of view.
+    This is a simple function with a Gaussian distribution centered at the middle of the FOV.
+
+    Parameters:
+    points: np.array, a numpy array of grid points in the environment (discrete coordinates).
+    fov_array: np.array, points describing the arc of the FOV boundary.
+    fov_depth: float, the maximum depth of the FOV.
+    """
+    # Find the center of the FOV
+    fov_center = np.mean(fov_array, axis=0)
+
+    # Define a simple Gaussian distribution around the center of the FOV
+    prob = np.exp(-np.linalg.norm(points - fov_center, axis=1) / (fov_depth / 3))
+
+    # Normalize the probabilities such that at boundaries the probability is zero
+    prob = (prob - np.min(prob)) / (np.max(prob) - np.min(prob))
+
+    return prob
+
+@timeit
+def clip_polygon(subject_polygon, clip_polygon):
+    """ Sutherland-Hodgman Polygon Clipping Algorithm """
+    def inside(p, cp):
+        return (cp[1, 0] - cp[0, 0]) * (p[1] - cp[0, 1]) > (cp[1, 1] - cp[0, 1]) * (p[0] - cp[0, 0])
+
+    def intersection(cp, s, e):
+        dc = cp[0] - cp[1]
+        dp = s - e
+        n1 = np.cross(cp[0], cp[1])
+        n2 = np.cross(s, e)
+        n3 = 1.0 / np.cross(dc, dp)
+        return (n1 * dp - n2 * dc) * n3
+
+    output_list = subject_polygon
+    cp1 = clip_polygon[-1]
+    for cp2 in clip_polygon:
+        input_list = output_list
+        output_list = []
+        s = input_list[-1]
+        for e in input_list:
+            if inside(e, np.array([cp1, cp2])):
+                if not inside(s, np.array([cp1, cp2])):
+                    output_list.append(intersection(np.array([cp1, cp2]), s, e))
+                output_list.append(e)
+            elif inside(s, np.array([cp1, cp2])):
+                output_list.append(intersection(np.array([cp1, cp2]), s, e))
+            s = e
+        cp1 = cp2
+    return np.array(output_list)
+
+
+def translate_grid(relative_grid, center):
+    return relative_grid + center

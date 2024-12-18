@@ -7,6 +7,8 @@ from ergodic_control import models, utilities
 import json
 import os
 from scipy.stats import multivariate_normal as mvn
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
 
 warnings.filterwarnings("ignore")
 
@@ -57,6 +59,10 @@ for key, value in param_data.items():
 
 param.alpha = np.array(param.alpha) * param.diffusion
 param.max_dtheta = np.pi / 12 # Maximum angular velocity (rad/s)
+param.box = np.array([[0, 0], 
+                    [param.nbResX, 0],
+                    [param.nbResX, param.nbResY],
+                    [0, param.nbResY]]) # Box constraints
 
 fig, ax = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -72,6 +78,11 @@ for a in ax:
 Initialize Agents
 ===============================
 """
+max_diffusion = np.max(param.alpha)
+param.dt = min(
+    0.2, (param.dx * param.dx) / (4.0 * max_diffusion)
+)  # for the stability of implicit integration of Heat Equation
+
 agents = []
 for i in range(param.nbAgents):
     # x0 = np.random.uniform(0, param.nbResX, 2)
@@ -162,9 +173,14 @@ param.dt = min(
     0.2, (param.dx * param.dx) / (4.0 * max_diffusion)
 )  # for the stability of implicit integration of Heat Equation
 
-# coverage_block = utilities.agent_block(param.nbVarX, param.min_kernel_val, param.agent_radius)
-# param.kernel_size = coverage_block.shape[0]
-param.kernel_size = param.fov_depth
+if param.use_fov:
+    # Initialize the Field of View (FOV)
+    fov_edges = utilities.init_fov(param.fov_deg, param.fov_depth)
+    # fov_edges = utilities.rotate_and_translate(fov_edges, agents[0].x, agents[0].theta)
+    param.kernel_size = param.fov_depth
+else:
+    coverage_block = utilities.agent_block(param.nbVarX, param.min_kernel_val, param.agent_radius)
+    param.kernel_size = coverage_block.shape[0]
 
 """
 ===============================
@@ -172,37 +188,55 @@ Main Loop
 ===============================
 """
 for t in range(param.nbDataPoints):
-    # # Debug
-    # if t % 50 == 0:
     print(f'Timestep: {t}')
 
     local_cooling = np.zeros((param.height, param.width))
     for agent in agents:
         p = agent.x
-        adjusted_position = p / param.dx
-        col, row = adjusted_position.astype(int)
+ 
+        if param.use_fov:
+            fov_edges = utilities.init_fov(param.fov_deg, param.fov_depth)
+            fov_edges = utilities.rotate_and_translate(fov_edges, p, agent.theta)
+            # Clip the FOV
+            fov_edges = utilities.clip_polygon(fov_edges, param.box)
+            fov_points = utilities.insidepolygon(fov_edges, grid_step=param.dx).T.astype(int)
+            # Delete points outside the box
+            fov_points = fov_points[
+                (fov_points[:, 0] >= 0)
+                & (fov_points[:, 0] < param.width)
+                & (fov_points[:, 1] >= 0)
+                & (fov_points[:, 1] < param.height)
+            ]
+            fov_probs = utilities.fov_coverage_block(fov_points, fov_edges, param.fov_depth)
+            # # # DEBUG
+            # fig = plt.figure()
+            # ax = fig.add_subplot(111)
+            # ax.scatter(p[0], p[1], c='black', s=100, marker='o')
+            # for i in range(len(param.box)):
+            #     ax.plot([param.box[i][0], param.box[(i + 1) % len(param.box)][0]], [param.box[i][1], param.box[(i + 1) % len(param.box)][1]], 'r-')
+            # for i in range(len(fov_edges)):
+            #     ax.plot([fov_edges[i][0], fov_edges[(i + 1) % len(fov_edges)][0]], [fov_edges[i][1], fov_edges[(i + 1) % len(fov_edges)][1]], 'b-')
+            # ax.scatter(fov_points[:, 0], fov_points[:, 1], c=fov_probs, cmap='Reds', s=10, marker='o')
+            # ax.set_xlim([-5, 105])
+            # ax.set_ylim([-5, 105])
+            # ax.set_aspect('equal')
+            # ax.set_title('Field of View')
+            # plt.show()
+            coverage_density[fov_points[:, 1], fov_points[:, 0]] += fov_probs
+        else:
+            adjusted_position = p / param.dx
+            col, row = adjusted_position.astype(int)
+            row_indices, row_start_kernel, num_kernel_rows = utilities.clamp_kernel_1d(
+                row, 0, param.height, param.kernel_size
+            )
+            col_indices, col_start_kernel, num_kernel_cols = utilities.clamp_kernel_1d(
+                col, 0, param.width, param.kernel_size
+            )
 
-        # Old with the coverage under the agent
-        # row_indices, row_start_kernel, num_kernel_rows = utilities.clamp_kernel_1d(
-        #     row, 0, param.height, param.kernel_size
-        # )
-        # col_indices, col_start_kernel, num_kernel_cols = utilities.clamp_kernel_1d(
-        #     col, 0, param.width, param.kernel_size
-        # )
-
-        # coverage_density[row_indices, col_indices] += coverage_block[
-        #     row_start_kernel : row_start_kernel + num_kernel_rows,
-        #     col_start_kernel : col_start_kernel + num_kernel_cols,
-        # ] # Eq. 3 - Coverage density
-
-        agent.fov = utilities.draw_fov(agent.x, agent.theta, param.fov, param.fov_depth)
-        fov_points, fov_probs = utilities.simple_gaussian_fov_block(
-            grids*100,
-            agent.fov,
-            param.fov_depth,
-            bounds=[0, 0, 100, 100],
-        )
-        coverage_density[fov_points[:, 1], fov_points[:, 0]] += fov_probs
+            coverage_density[row_indices, col_indices] += coverage_block[
+                row_start_kernel : row_start_kernel + num_kernel_rows,
+                col_start_kernel : col_start_kernel + num_kernel_cols,
+            ] # Eq. 3 - Coverage density
 
         # if param.local_cooling != 0:
         #     local_cooling[row_indices, col_indices] += coverage_block[
@@ -243,6 +277,9 @@ for t in range(param.nbDataPoints):
 
     gradient_y, gradient_x = np.gradient(heat, 1, 1) # Gradient of the heat
 
+    gradient_x = gradient_x / np.linalg.norm(gradient_x)
+    gradient_y = gradient_y / np.linalg.norm(gradient_y)
+
     for agent in agents:
         grad = utilities.calculate_gradient(
             param,
@@ -252,16 +289,16 @@ for t in range(param.nbDataPoints):
         )
         agent.update(grad)
 
-    if t == 500:
+    if t == param.nbDataPoints - 1:
         # Plot the agents
-        fov = utilities.draw_fov_arc(agent.x, agent.theta, param.fov, param.fov_depth)
         ax[0].cla()
         ax[1].cla()
 
         ax[0].contourf(grids_x*100, grids_y*100, goal_density, cmap='Reds', levels=10)
         ax[0].plot(agents[0].x_hist[:, 0], agents[0].x_hist[:, 1], c='black', alpha=1, lw=2)
         # FOV
-        ax[0].fill(agent.fov[:, 0], agent.fov[:, 1], c='tab:blue', alpha=0.5)
+        if param.use_fov:
+            ax[0].fill(fov_edges[:, 0], fov_edges[:, 1], 'b', alpha=0.2)
         # Heading
         ax[0].quiver(agents[0].x[0], agents[0].x[1], np.cos(agents[0].theta), np.sin(agents[0].theta), scale = 2, scale_units='inches')
         ax[0].scatter(agents[0].x[0], agents[0].x[1], c='tab:blue', s=100, marker='o')
