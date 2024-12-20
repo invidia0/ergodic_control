@@ -13,7 +13,7 @@
     "nbFct": 10,
     "nbRes": 100,
     "min_kernel_val": 1e-8,
-    "diffusion": 0.5,
+    "diffusion": 1.0,
     "source_strength": 1,
     "obstacle_strength": 0,
     "agent_radius": 10,

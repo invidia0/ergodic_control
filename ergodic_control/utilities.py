@@ -603,3 +603,36 @@ def clip_polygon(subject_polygon, clip_polygon):
 
 def translate_grid(relative_grid, center):
     return relative_grid + center
+
+@timeit
+def relative_move_fov(fov_array, old_pos, old_head, new_pos, new_head):
+    """
+    Moves and rotates the FOV array from the old agent position and heading to the new agent position and heading.
+
+    Parameters:
+    - fov_array: np.array, shape (3, 2), points of the FOV boundary (already aligned to the old position and heading).
+    - old_pos: np.array, shape (2,), the old position of the agent.
+    - old_head: float, the old orientation (in radians).
+    - new_pos: np.array, shape (2,), the new position of the agent.
+    - new_head: float, the new orientation (in radians).
+
+    Returns:
+    - transformed_fov: np.array, shape (3, 2), the new FOV points.
+    """
+    # Step 1: Translation vector to move from old position to new position
+    trans_v = new_pos - old_pos
+
+    # Step 2: Compute the relative rotation angle
+    rel_rot = new_head - old_head
+
+    # Rotation matrix for the relative rotation
+    rot_matrix = np.array([
+        [np.cos(rel_rot), -np.sin(rel_rot)],
+        [np.sin(rel_rot), np.cos(rel_rot)]
+    ])
+
+    # Translate FOV to the new position
+    trans_fov = fov_array + trans_v
+
+    # Rotate FOV around the new agent position
+    return np.dot(trans_fov - new_pos, rot_matrix.T) + new_pos
