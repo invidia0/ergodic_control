@@ -84,20 +84,16 @@ param.dt = min(
 )  # for the stability of implicit integration of Heat Equation
 
 agents = []
-x0_array = np.array([[20,20],
-               [20,80],
-               [80,80]])
 for i in range(param.nbAgents):
     # x0 = np.random.uniform(0, param.nbResX, 2)
-    x0 = x0_array[i]
+    x0 = np.array([20, 20])
     theta0 = np.random.uniform(0, 2 * np.pi)
     agent = models.SecondOrderAgentWithHeading(x=x0,
                                                 theta=theta0,
                                                 max_dx=param.max_dx,
                                                 max_ddx=param.max_ddx,
                                                 max_dtheta=param.max_dtheta,
-                                                dt=param.dt,
-                                                id=i)
+                                                dt=param.dt)
     agents.append(agent)
 
 """
@@ -177,38 +173,33 @@ param.dt = min(
     0.2, (param.dx * param.dx) / (4.0 * max_diffusion)
 )  # for the stability of implicit integration of Heat Equation
 
-fov_edges = []
-# Initialize the Field of View (FOV) and move it to the robot position
-for agent in agents:
-    tmp = utilities.init_fov(param.fov_deg, param.fov_depth)
-    fov_edges.append(utilities.rotate_and_translate(tmp, agent.x, agent.theta))
-
-coverage_block = utilities.agent_block(param.nbVarX, param.min_kernel_val, param.agent_radius)
-param.kernel_size = param.fov_depth
+if param.use_fov:
+    # Initialize the Field of View (FOV)
+    fov_edges = utilities.init_fov(param.fov_deg, param.fov_depth)
+    fov_edges = utilities.rotate_and_translate(fov_edges, agents[0].x, agents[0].theta)
+    param.kernel_size = param.fov_depth
+else:
+    coverage_block = utilities.agent_block(param.nbVarX, param.min_kernel_val, param.agent_radius)
+    param.kernel_size = coverage_block.shape[0]
 
 """
 ===============================
 Main Loop
 ===============================
 """
-last_heading = np.empty((0, 1))
-last_position = np.empty((0, 2))
+last_heading = agents[0].theta
+last_position = agents[0].x
 
-for agent in agents:
-    last_heading = np.vstack((last_heading, agent.theta))
-    last_position = np.vstack((last_position, agent.x))
-
-collisions = []
 for t in range(param.nbDataPoints):
-    print(f'Step: {t}/{param.nbDataPoints}', end='\r')
+    print(f'Timestep: {t}')
 
     local_cooling = np.zeros((param.height, param.width))
     for agent in agents:
+        p = agent.x
         if param.use_fov:
-            """ Field of View (FOV) """
-            fov_edges_moved = utilities.relative_move_fov(fov_edges[agent.id], last_position[agent.id], last_heading[agent.id], agent.x, agent.theta)
+            fov_edges = utilities.relative_move_fov(fov_edges, last_position, last_heading, agent.x, agent.theta)
             # Clip the FOV
-            fov_edges_clipped = utilities.clip_polygon(fov_edges_moved.squeeze(), param.box)
+            fov_edges_clipped = utilities.clip_polygon(fov_edges, param.box)
             fov_points = utilities.insidepolygon(fov_edges_clipped, grid_step=param.dx).T.astype(int)
             # Delete points outside the box
             fov_points = fov_points[
@@ -218,13 +209,25 @@ for t in range(param.nbDataPoints):
                 & (fov_points[:, 1] < param.height)
             ]
             fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
-            fov_probs = fov_probs / np.sum(fov_probs) # Normalize the probabilities
+
+            # # DEBUG
+            # fig = plt.figure()
+            # ax = fig.add_subplot(111)
+            # ax.scatter(p[0], p[1], c='black', s=100, marker='o')
+            # for i in range(len(param.box)):
+            #     ax.plot([param.box[i][0], param.box[(i + 1) % len(param.box)][0]], [param.box[i][1], param.box[(i + 1) % len(param.box)][1]], 'r-')
+            # for i in range(len(fov_edges)):
+            #     ax.plot([fov_edges[i][0], fov_edges[(i + 1) % len(fov_edges)][0]], [fov_edges[i][1], fov_edges[(i + 1) % len(fov_edges)][1]], 'b-')
+            # ax.scatter(fov_points[:, 0], fov_points[:, 1], c=fov_probs, cmap='Reds', s=10, marker='o')
+            # ax.set_xlim([-5, 105])
+            # ax.set_ylim([-5, 105])
+            # ax.set_aspect('equal')
+            # ax.set_title('Field of View')
+            # plt.show()
 
             coverage_density[fov_points[:, 1], fov_points[:, 0]] += fov_probs
-            fov_edges[agent.id] = fov_edges_moved.squeeze()
         else:
-            """ Agent block """
-            adjusted_position = agent.x / param.dx
+            adjusted_position = p / param.dx
             col, row = adjusted_position.astype(int)
             row_indices, row_start_kernel, num_kernel_rows = utilities.clamp_kernel_1d(
                 row, 0, param.height, param.kernel_size
@@ -238,22 +241,12 @@ for t in range(param.nbDataPoints):
                 col_start_kernel : col_start_kernel + num_kernel_cols,
             ] # Eq. 3 - Coverage density
 
-        """ Local cooling """
-        adjusted_position = agent.x / param.dx
-        col, row = adjusted_position.astype(int)
-        row_indices, row_start_kernel, num_kernel_rows = utilities.clamp_kernel_1d(
-            row, 0, param.height, param.kernel_size
-        )
-        col_indices, col_start_kernel, num_kernel_cols = utilities.clamp_kernel_1d(
-            col, 0, param.width, param.kernel_size
-        )
-
-        local_cooling[row_indices, col_indices] += coverage_block[
-            row_start_kernel : row_start_kernel + num_kernel_rows,
-            col_start_kernel : col_start_kernel + num_kernel_cols,
-        ]
-
-    local_cooling = utilities.normalize_mat(local_cooling) * param.area # Eq. 15 - Local cooling normalized
+        # if param.local_cooling != 0:
+        #     local_cooling[row_indices, col_indices] += coverage_block[
+        #         row_start_kernel : row_start_kernel + num_kernel_rows,
+        #         col_start_kernel : col_start_kernel + num_kernel_cols,
+        #     ]
+        # local_cooling = utilities.normalize_mat(local_cooling) * param.area # Eq. 15 - Local cooling normalized
 
     coverage = utilities.normalize_mat(coverage_density) # Eq. 4 - Coverage density normalized
 
@@ -279,7 +272,7 @@ for t in range(param.nbDataPoints):
         )
         / (param.dx * param.dx)
         + param.source_strength * utilities.offset(source, 0, 0)
-        - param.local_cooling * utilities.offset(local_cooling, 0, 0)
+        # - param.local_cooling * utilities.offset(local_cooling, 0, 0)
         - param.beta * utilities.offset(heat, 0, 0)
     )  + utilities.offset(heat, 0, 0)
 
@@ -290,19 +283,10 @@ for t in range(param.nbDataPoints):
     gradient_x = gradient_x / np.linalg.norm(gradient_x)
     gradient_y = gradient_y / np.linalg.norm(gradient_y)
 
-    # Check collisions
-    for agent in agents:
-        for other_agent in agents:
-            if agent.id != other_agent.id:
-                if np.linalg.norm(agent.x - other_agent.x) < 1e-2:
-                    print(f'Collision between agent {agent.id} and agent {other_agent.id}')
-                    collisions.append([t, agent.x])
+    last_heading = agents[0].theta
+    last_position = agents[0].x
 
     for agent in agents:
-        # Store the last position and heading
-        last_heading[agent.id] = agent.theta
-        last_position[agent.id] = agent.x
-        # Update the agent
         grad = utilities.calculate_gradient(
             param,
             agent,
@@ -312,38 +296,32 @@ for t in range(param.nbDataPoints):
         agent.update(grad)
 
     if t == param.nbDataPoints - 1:
-        time_array = np.linspace(0, param.nbDataPoints, param.nbDataPoints)
         # Plot the agents
         ax[0].cla()
         ax[1].cla()
 
         ax[0].contourf(grids_x*100, grids_y*100, goal_density, cmap='Reds', levels=10)
-        for agent in agents:
-            lines = utilities.colored_line(agent.x_hist[:, 0],
-                                            agent.x_hist[:, 1],
-                                            time_array,
-                                            ax[0],
-                                            cmap='Greys',
-                                            linewidth=2)
+        # ax[0].plot(agents[0].x_hist[:, 0], agents[0].x_hist[:, 1], c='black', alpha=1, lw=2)
+        time_array = np.linspace(0, param.nbDataPoints, param.nbDataPoints)
+        lines = utilities.colored_line(agents[0].x_hist[:, 0], 
+                                        agents[0].x_hist[:, 1],
+                                        time_array,
+                                        ax[0],
+                                        cmap='Greys',
+                                        linewidth=2)
         # FOV
         if param.use_fov:
-            for agent in agents:
-                fov_edges_clipped = utilities.clip_polygon(fov_edges[agent.id], param.box)
-                ax[0].fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color='blue', alpha=0.3)
-                # Heading
-                ax[0].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
-                ax[0].scatter(agent.x_hist[0, 0], agent.x_hist[0, 1], s=100, facecolors='none', edgecolors='green', lw=2)
-                ax[0].scatter(agent.x[0], agent.x[1], c='k', s=100, marker='o', zorder=10)
-                ax[1].scatter(agent.x[0], agent.x[1], c='black', s=100, marker='o')
-                # Plot the heading
-                ax[1].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
+            ax[0].fill(fov_edges[:, 0], fov_edges[:, 1], 'b', alpha=0.2)
+        # Heading
+        ax[0].quiver(agents[0].x[0], agents[0].x[1], np.cos(agents[0].theta), np.sin(agents[0].theta), scale = None, scale_units='inches')
+        ax[0].scatter(agents[0].x_hist[0, 0], agents[0].x_hist[0, 1], s=100, facecolors='none', edgecolors='black', lw=2)
+        ax[0].scatter(agents[0].x[0], agents[0].x[1], c='k', s=100, marker='o', zorder=10)
 
-        # Plot the collisions
-        for t in range(len(collisions)):
-            if collisions[t][0] == t:
-                ax[0].scatter(collisions[t][1][0], collisions[t][1][1], c='red', s=100, marker='x')
         ax[1].contourf(grids_x*100, grids_y*100, heat, cmap='coolwarm', levels=10)
         ax[1].quiver(grids_x*100, grids_y*100, gradient_x / np.linalg.norm(gradient_x), gradient_y / np.linalg.norm(gradient_y), scale = 1, scale_units='inches')
+        ax[1].scatter(agents[0].x[0], agents[0].x[1], c='black', s=100, marker='o')
+        # Plot the heading
+        ax[1].quiver(agents[0].x[0], agents[0].x[1], np.cos(agents[0].theta), np.sin(agents[0].theta), scale = 2, scale_units='inches')
 
         plt.suptitle(f'Timestep: {t}')
         # plt.pause(0.0001)

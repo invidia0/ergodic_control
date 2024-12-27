@@ -85,6 +85,7 @@ class SecondOrderAgentWithHeading:
         max_ddx=0.2,  # maximum acceleration
         max_dtheta=np.pi / 4,  # maximum angular velocity
         dt=1,  # time step
+        id=0, # agent id
     ):
         self.x = np.array(x)  # position [x, y]
         self.theta = theta  # heading
@@ -96,6 +97,7 @@ class SecondOrderAgentWithHeading:
         self.max_ddx = max_ddx
         self.max_dtheta = max_dtheta
 
+        self.id = id
         self.x_hist = np.empty((0, len(x)))
 
     def update(self, gradient):
@@ -137,6 +139,7 @@ class SecondOrderAgentWithHeading:
         Return the current state of the agent.
         """
         return {
+            "id": self.id,
             "position": self.x,
             "heading": self.theta,
             "velocity": self.dx,
