@@ -5,6 +5,10 @@ from shapely.geometry import Point, Polygon
 from matplotlib.path import Path
 import warnings
 import time
+from skimage.measure import find_contours
+from shapely.geometry import Point, Polygon, MultiPolygon
+from shapely.vectorized import contains
+import matplotlib.pyplot as plt
 
 def timeit(method):
     """
@@ -19,6 +23,22 @@ def timeit(method):
         print(f"{method.__name__} executed in: {te - ts:.6f} sec")
         return result
     return timed
+
+def update_heat(heat, source, local_cooling, map, param):
+    # Compute the laplacian for all grid cells
+    laplacian = (
+        np.roll(heat, 1, axis=0)  # Shift up
+        + np.roll(heat, -1, axis=0)  # Shift down
+        + np.roll(heat, 1, axis=1)  # Shift left
+        + np.roll(heat, -1, axis=1)  # Shift right
+        - 4 * heat
+    ) / param.dx**2
+
+    # Only update the heat for free cells (map == 0)
+    new_temperature = heat + param.dt * (param.alpha * laplacian + param.source_strength * source)
+    new_temperature[map != 0] = heat[map != 0]  # Keep occupied cells unchanged
+
+    return new_temperature
 
 def gauss_pdf(points, mean, covariance):
   # Calculate the multivariate Gaussian probability
@@ -301,33 +321,33 @@ def offset(mat, i, j):
     cols = cols - 2
     return mat[1 + i : 1 + i + rows, 1 + j : 1 + j + cols]
 
-def clamp_kernel_1d(x, low_lim, high_lim, kernel_size):
-    """
-    A function to calculate the start and end indices
-    of the kernel around the agent that is inside the grid
-    i.e. clamp the kernel by the grid boundaries
-    """
-    start_kernel = low_lim
-    start_grid = x - (kernel_size // 2)
-    num_kernel = kernel_size
-    # bound the agent to be inside the grid
-    if x <= -(kernel_size // 2):
-        x = -(kernel_size // 2) + 1
-    elif x >= high_lim + (kernel_size // 2):
-        x = high_lim + (kernel_size // 2) - 1
+# def clamp_kernel_1d(x, low_lim, high_lim, kernel_size):
+#     """
+#     A function to calculate the start and end indices
+#     of the kernel around the agent that is inside the grid
+#     i.e. clamp the kernel by the grid boundaries
+#     """
+#     start_kernel = low_lim
+#     start_grid = x - (kernel_size // 2)
+#     num_kernel = kernel_size
+#     # bound the agent to be inside the grid
+#     if x <= -(kernel_size // 2):
+#         x = -(kernel_size // 2) + 1
+#     elif x >= high_lim + (kernel_size // 2):
+#         x = high_lim + (kernel_size // 2) - 1
 
-    # if agent kernel around the agent is outside the grid,
-    # clamp the kernel by the grid boundaries
-    if start_grid < low_lim:
-        start_kernel = kernel_size // 2 - x - 1
-        num_kernel = kernel_size - start_kernel - 1
-        start_grid = low_lim
-    elif start_grid + kernel_size >= high_lim:
-        num_kernel -= x - (high_lim - num_kernel // 2 - 1)
-    if num_kernel > low_lim:
-        grid_indices = slice(start_grid, start_grid + num_kernel)
+#     # if agent kernel around the agent is outside the grid,
+#     # clamp the kernel by the grid boundaries
+#     if start_grid < low_lim:
+#         start_kernel = kernel_size // 2 - x - 1
+#         num_kernel = kernel_size - start_kernel - 1
+#         start_grid = low_lim
+#     elif start_grid + kernel_size >= high_lim:
+#         num_kernel -= x - (high_lim - num_kernel // 2 - 1)
+#     if num_kernel > low_lim:
+#         grid_indices = slice(start_grid, start_grid + num_kernel)
 
-    return grid_indices, start_kernel, num_kernel
+#     return grid_indices, start_kernel, num_kernel
 
 def border_interpolate(x, length, border_type):
     """
@@ -361,35 +381,88 @@ def bilinear_interpolation(grid, pos):
     c = c01 * (1 - yd) + c11 * yd
     return c
 
-def calculate_gradient(param, agent, gradient_x, gradient_y):
+def clamp_kernel_1d(x, low_lim, high_lim, kernel_size, occupancy_grid=None, axis=None):
+    """
+    Calculate the start and end indices of the kernel around the agent
+    that is inside the grid while avoiding walls.
+    """
+    start_kernel = low_lim
+    start_grid = x - (kernel_size // 2)
+    num_kernel = kernel_size
+
+    # Bound the agent to be inside the grid
+    if x <= -(kernel_size // 2):
+        x = -(kernel_size // 2) + 1
+    elif x >= high_lim + (kernel_size // 2):
+        x = high_lim + (kernel_size // 2) - 1
+
+    # Clamp the kernel to grid boundaries
+    if start_grid < low_lim:
+        start_kernel = kernel_size // 2 - x - 1
+        num_kernel = kernel_size - start_kernel - 1
+        start_grid = low_lim
+    elif start_grid + kernel_size >= high_lim:
+        num_kernel -= x - (high_lim - num_kernel // 2 - 1)
+    if num_kernel > low_lim:
+        grid_indices = slice(start_grid, start_grid + num_kernel)
+
+    # Avoid walls if occupancy grid is provided
+    if occupancy_grid is not None and axis is not None:
+        for i in range(grid_indices.start, grid_indices.stop):
+            if axis == "row" and occupancy_grid[i, x] == 1:  # Avoid walls in rows
+                start_grid = max(i - 1, low_lim)
+                num_kernel -= 1
+            elif axis == "col" and occupancy_grid[x, i] == 1:  # Avoid walls in cols
+                start_grid = max(i - 1, low_lim)
+                num_kernel -= 1
+
+    return grid_indices, start_kernel, num_kernel
+
+def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid):
     """
     Calculate movement direction of the agent by considering the gradient
-    of the temperature field near the agent
+    of the temperature field near the agent, avoiding walls.
     """
-    # find agent pos on the grid as integer indices
-    adjusted_position = agent.x / param.dx
-    # note x axis corresponds to col and y axis corresponds to row
-    col, row = adjusted_position.astype(int)
+    # Find agent position on the grid as integer indices
+    adjusted_position = agent.x
+    col, row = adjusted_position.astype(int)  # x corresponds to col, y to row
 
     gradient = np.zeros(2)
-    # if agent is inside the grid, interpolate the gradient for agent position
-    if row > 0 and row < param.height - 1 and col > 0 and col < param.width - 1:
+
+    # Check if agent is inside the grid
+    if 0 <= row < param.height and 0 <= col < param.width:
+        # Interpolate the gradient for the agent's position
         gradient[0] = bilinear_interpolation(gradient_x, adjusted_position)
         gradient[1] = bilinear_interpolation(gradient_y, adjusted_position)
 
-    # if kernel around the agent is outside the grid,
-    # use the gradient to direct the agent inside the grid
-    boundary_gradient = 2  # 0.1
-    pad = param.kernel_size - 1
-    if row <= pad:
-        gradient[1] = boundary_gradient
-    elif row >= param.height - 1 - pad:
-        gradient[1] = -boundary_gradient
+    # Always check for walls within the kernel size and push the agent away
+    wall_boundary_gradient = 2
+    kernel_radius = param.kernel_size // 2
 
-    if col <= pad:
-        gradient[0] = boundary_gradient
-    elif col >= param.width - pad:
-        gradient[0] = -boundary_gradient
+    wall_effect_x = 0
+    wall_effect_y = 0
+
+    for dr in range(-kernel_radius, kernel_radius + 1):
+        for dc in range(-kernel_radius, kernel_radius + 1):
+            neighbor_row = row + dr
+            neighbor_col = col + dc
+
+            if 0 <= neighbor_row < param.height and 0 <= neighbor_col < param.width:
+                if occupancy_grid[neighbor_row, neighbor_col] == 1:  # Wall detected
+                    # Calculate influence based on proximity (closer walls have stronger effect)
+                    distance = max(abs(dr), abs(dc))
+                    influence = wall_boundary_gradient / (distance + 1e-5)  # Avoid divide by zero
+                    wall_effect_x += influence * (-dc)  # Push away from the wall
+                    wall_effect_y += influence * (-dr)  # Push away from the wall
+
+    # Combine the interpolated gradient and wall avoidance effect
+    gradient[0] += wall_effect_x
+    gradient[1] += wall_effect_y
+
+    # Normalize the resulting gradient to prevent erratic movements
+    norm = np.linalg.norm(gradient)
+    if norm > 0:
+        gradient /= norm
 
     return gradient
 
@@ -508,37 +581,64 @@ def init_fov(fov_deg, fov_depth):
     return np.array([[0, 0], left_point, right_point])
 
 @timeit
+# def insidepolygon(polygon, grid_step=1):
+#     """
+#     This function returns a list of points that lie within a polygon defined by its vertices.
+#     """
+
+#     xs=np.array(polygon[:,0], dtype=float)
+#     ys=np.array(polygon[:,1], dtype=float)
+
+#     # The possible range of coordinates that can be returned
+#     x_range=np.arange(np.min(xs),np.max(xs), grid_step)
+#     y_range=np.arange(np.min(ys),np.max(ys), grid_step)
+
+#     # Set the grid of coordinates on which the triangle lies. The centre of the
+#     # triangle serves as a criterion for what is inside or outside the triangle.
+#     X,Y=np.meshgrid( x_range,y_range )
+#     xc=np.mean(xs)
+#     yc=np.mean(ys)
+
+#     # From the array 'triangle', points that lie outside the triangle will be
+#     # set to 'False'.
+#     triangle = np.ones(X.shape,dtype=bool)
+#     for i in range(len(polygon)):
+#         ii=(i+1)%len(polygon)
+#         if xs[i]==xs[ii]:
+#             include = X *(xc-xs[i])/abs(xc-xs[i]) > xs[i] *(xc-xs[i])/abs(xc-xs[i])
+#         else:
+#             poly=np.poly1d([(ys[ii]-ys[i])/(xs[ii]-xs[i]),ys[i]-xs[i]*(ys[ii]-ys[i])/(xs[ii]-xs[i])])
+#             include = Y *(yc-poly(xc))/abs(yc-poly(xc)) > poly(X) *(yc-poly(xc))/abs(yc-poly(xc))
+#         triangle*=include
+
+#     return np.array([X[triangle], Y[triangle]])
+@timeit
 def insidepolygon(polygon, grid_step=1):
     """
-    This function returns a list of points that lie within a polygon defined by its vertices.
+    Returns a list of points that lie within a non-convex polygon defined by its vertices.
+    
+    Parameters:
+    - polygon: List or array of (x, y) coordinates representing the polygon vertices.
+    - grid_step: Spacing between grid points to sample inside the polygon.
+    
+    Returns:
+    - points_inside: Numpy array of points [[x1, y1], [x2, y2], ...] inside the polygon.
     """
+    polygon_shapely = Polygon(polygon)
+    
+    # Get bounding box directly from the polygon
+    min_x, min_y, max_x, max_y = polygon_shapely.bounds
+    
+    # Generate grid points within the bounding box
+    x_range = np.arange(min_x, max_x, grid_step)
+    y_range = np.arange(min_y, max_y, grid_step)
+    X, Y = np.meshgrid(x_range, y_range)
+    grid_points = np.column_stack((X.ravel(), Y.ravel()))
+    
+    # Use vectorized contains to check points
+    mask = contains(polygon_shapely, grid_points[:, 0], grid_points[:, 1])
 
-    xs=np.array(polygon[:,0], dtype=float)
-    ys=np.array(polygon[:,1], dtype=float)
-
-    # The possible range of coordinates that can be returned
-    x_range=np.arange(np.min(xs),np.max(xs), grid_step)
-    y_range=np.arange(np.min(ys),np.max(ys), grid_step)
-
-    # Set the grid of coordinates on which the triangle lies. The centre of the
-    # triangle serves as a criterion for what is inside or outside the triangle.
-    X,Y=np.meshgrid( x_range,y_range )
-    xc=np.mean(xs)
-    yc=np.mean(ys)
-
-    # From the array 'triangle', points that lie outside the triangle will be
-    # set to 'False'.
-    triangle = np.ones(X.shape,dtype=bool)
-    for i in range(len(polygon)):
-        ii=(i+1)%len(polygon)
-        if xs[i]==xs[ii]:
-            include = X *(xc-xs[i])/abs(xc-xs[i]) > xs[i] *(xc-xs[i])/abs(xc-xs[i])
-        else:
-            poly=np.poly1d([(ys[ii]-ys[i])/(xs[ii]-xs[i]),ys[i]-xs[i]*(ys[ii]-ys[i])/(xs[ii]-xs[i])])
-            include = Y *(yc-poly(xc))/abs(yc-poly(xc)) > poly(X) *(yc-poly(xc))/abs(yc-poly(xc))
-        triangle*=include
-
-    return np.array([X[triangle], Y[triangle]])
+    return grid_points[mask]
 
 def rotate_and_translate(fov_array, pos, theta):
     rot_matrix = np.array([
@@ -636,3 +736,97 @@ def relative_move_fov(fov_array, old_pos, old_head, new_pos, new_head):
 
     # Rotate FOV around the new agent position
     return np.dot(trans_fov - new_pos, rot_matrix.T) + new_pos
+
+def get_occupied_polygon(map_array):
+    contours = find_contours(map_array, level=0.5)
+    if contours:
+        return np.array(contours[0])
+    else:
+        return np.array([])
+
+def clip_polygon_no_convex(agent_pos, fov_polygon, occupied_polygon):
+    """
+    Clips the field-of-view (fov_polygon) by the occupied area (occupied_polygon),
+    and returns the resulting polygon closest to the agent position.
+    
+    Parameters:
+    - agent_pos: A tuple or list with the agent's position (x0, y0).
+    - fov_polygon: List or array of points representing the field-of-view polygon.
+    - occupied_polygon: List or array of points representing the occupied polygon.
+    
+    Returns:
+    - clipped_polygon: A numpy array of coordinates of the clipped polygon.
+    """
+    agent_pos = Point(agent_pos)
+    
+    # Convert polygons to Shapely objects
+    fov_poly = Polygon(fov_polygon)
+    occ_map = Polygon(occupied_polygon)
+    
+    # Perform clipping
+    diff = fov_poly.difference(occ_map)
+    
+    # Handle multiple intersections (if it's a MultiPolygon)
+    if isinstance(diff, MultiPolygon):
+        diff = min(diff.geoms, key=lambda poly: poly.distance(agent_pos))
+    
+    # Check if the resulting clipped polygon is not empty
+    if not diff.is_empty:
+        return np.array(diff.exterior.coords)
+    else:
+        return np.array([])
+
+def generate_gmm_on_map(map, free_cells, n_gaussians, n_particles, dim, random_state=None):
+    """
+    Generates a Gaussian Mixture Model (GMM) on a map where walls block Gaussian influence.
+
+    Parameters:
+        map (np.ndarray): Map array where 0 represents free cells and 1 represents walls.
+        free_cells (np.ndarray): Array of free cells (coordinates), shape (n_free_cells, dim).
+        n_gaussians (int): Number of Gaussian peaks to generate.
+        n_particles (int): Number of particles to sample for each Gaussian.
+        dim (int): Dimensionality of the map (e.g., 2 for 2D).
+        random_state (int, optional): Seed for reproducibility.
+
+    Returns:
+        gmm (GaussianMixture): Trained Gaussian Mixture Model.
+        zi_masked (np.ndarray): Values of the GMM evaluated on the map, with walls masked as NaN.
+    """
+    if random_state:
+        np.random.seed(random_state)
+
+    # Randomly select means from the free cells
+    means_idx = np.random.choice(len(free_cells), size=n_gaussians, replace=False)
+    means = free_cells[means_idx]
+
+    # Generate random covariances
+    covariances = []
+    for _ in range(n_gaussians):
+        cov = np.diag(np.random.uniform(20, 800, size=dim))  # Restrict covariance values
+        covariances.append(cov)
+
+    # Generate samples
+    samples = []
+    for mean, cov in zip(means, covariances):
+        for _ in range(n_particles):
+            while True:
+                sample = np.random.multivariate_normal(mean, cov)
+                # Check bounds and free cells
+                if (0 <= sample[0] < map.shape[0]) and (0 <= sample[1] < map.shape[1]) and map[int(sample[0]), int(sample[1])] == 0:
+                    samples.append(sample)
+                    break
+    samples = np.array(samples)
+
+    # Fit the GMM
+    gmm = GaussianMixture(n_components=n_gaussians, covariance_type='full', random_state=random_state)
+    gmm.fit(samples)
+
+    # Evaluate the GMM only at free cells
+    gmm_density = gmm.score_samples(free_cells)
+    density_at_free_cells = np.exp(gmm_density)
+
+    # Create a map-shaped density array
+    zi = np.full(map.shape, np.nan)  # Initialize with NaN
+    zi[free_cells[:, 0], free_cells[:, 1]] = density_at_free_cells  # Assign densities to free cells
+
+    return gmm, zi

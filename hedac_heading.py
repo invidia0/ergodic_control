@@ -58,7 +58,7 @@ for key, value in param_data.items():
     setattr(param, key, value)
 
 param.alpha = np.array(param.alpha) * param.diffusion
-param.max_dtheta = np.pi / 12 # Maximum angular velocity (rad/s)
+param.max_dtheta = np.pi / 8 # Maximum angular velocity (rad/s)
 param.box = np.array([[0, 0], 
                     [param.nbResX, 0],
                     [param.nbResX, param.nbResY],
