@@ -34,7 +34,6 @@ def update_heat(heat, source, local_cooling, map, param):
         - 4 * heat
     ) / param.dx**2
 
-    # Only update the heat for free cells (map == 0)
     new_temperature = heat + param.dt * (param.alpha * laplacian + param.source_strength * source)
     new_temperature[map != 0] = heat[map != 0]  # Keep occupied cells unchanged
 
@@ -134,6 +133,12 @@ def normalize_mat(mat):
     Normalize a matrix to sum to 1.
     """
     return mat / (np.sum(mat) + 1e-10)
+
+def min_max_normalize(mat):
+    """
+    Normalize a matrix to [0, 1].
+    """
+    return (mat - np.min(mat)) / (np.max(mat) - np.min(mat) + 1e-10)
 
 def hadamard_matrix(n: int) -> np.ndarray:
     """
@@ -581,38 +586,6 @@ def init_fov(fov_deg, fov_depth):
     return np.array([[0, 0], left_point, right_point])
 
 @timeit
-# def insidepolygon(polygon, grid_step=1):
-#     """
-#     This function returns a list of points that lie within a polygon defined by its vertices.
-#     """
-
-#     xs=np.array(polygon[:,0], dtype=float)
-#     ys=np.array(polygon[:,1], dtype=float)
-
-#     # The possible range of coordinates that can be returned
-#     x_range=np.arange(np.min(xs),np.max(xs), grid_step)
-#     y_range=np.arange(np.min(ys),np.max(ys), grid_step)
-
-#     # Set the grid of coordinates on which the triangle lies. The centre of the
-#     # triangle serves as a criterion for what is inside or outside the triangle.
-#     X,Y=np.meshgrid( x_range,y_range )
-#     xc=np.mean(xs)
-#     yc=np.mean(ys)
-
-#     # From the array 'triangle', points that lie outside the triangle will be
-#     # set to 'False'.
-#     triangle = np.ones(X.shape,dtype=bool)
-#     for i in range(len(polygon)):
-#         ii=(i+1)%len(polygon)
-#         if xs[i]==xs[ii]:
-#             include = X *(xc-xs[i])/abs(xc-xs[i]) > xs[i] *(xc-xs[i])/abs(xc-xs[i])
-#         else:
-#             poly=np.poly1d([(ys[ii]-ys[i])/(xs[ii]-xs[i]),ys[i]-xs[i]*(ys[ii]-ys[i])/(xs[ii]-xs[i])])
-#             include = Y *(yc-poly(xc))/abs(yc-poly(xc)) > poly(X) *(yc-poly(xc))/abs(yc-poly(xc))
-#         triangle*=include
-
-#     return np.array([X[triangle], Y[triangle]])
-@timeit
 def insidepolygon(polygon, grid_step=1):
     """
     Returns a list of points that lie within a non-convex polygon defined by its vertices.
@@ -830,3 +803,69 @@ def generate_gmm_on_map(map, free_cells, n_gaussians, n_particles, dim, random_s
     zi[free_cells[:, 0], free_cells[:, 1]] = density_at_free_cells  # Assign densities to free cells
 
     return gmm, zi
+
+@timeit
+def max_pooling(data, downsampling_factor, divisor_range=(2, 5)):
+    """
+    Performs max pooling on a dataset of samples (x, y, f(x, y)).
+    
+    Parameters:
+    - data (np.ndarray): Input dataset of shape (N, 3), where each row is (x, y, f(x, y)).
+    - downsampling_factor (int): Factor to reduce the number of samples.
+    - divisor_range (tuple): Range of divisors to consider for approximation (inclusive).
+    
+    Returns:
+    - pooled_data (np.ndarray): Downsampled dataset of shape (M, 3), where M is determined by the adjusted downsampling factor.
+    """
+    if len(data) == 0 or len(data) == 1:
+        return data
+
+    n_samples = len(data)
+
+    # Adjust the downsampling factor if it's not feasible
+    while n_samples % downsampling_factor != 0:
+        # Find a divisor in the given range
+        for factor in range(divisor_range[1], divisor_range[0] - 1, -1):
+            if n_samples % factor == 0:
+                downsampling_factor = factor
+                break
+        else:
+            # Remove one random sample to make the downsampling factor valid
+            data = np.delete(data, np.random.randint(0, n_samples), axis=0)
+            n_samples -= 1
+            
+    chunk_size = n_samples // downsampling_factor
+    pooled_data = []
+
+    # Iterate through chunks of data
+    for i in range(0, n_samples, chunk_size):
+        chunk = data[i:i + chunk_size]
+        if len(chunk) > 0:  # Handle edge cases where the last chunk might be incomplete
+            max_idx = np.argmax(chunk[:, 2])
+            pooled_data.append(chunk[max_idx])
+
+    return np.array(pooled_data)
+
+def rbf_white_kernel(X1: np.ndarray, 
+           X2: np.ndarray,
+           lengthscale: float=1.0,
+           sigma_f: float=1.0,
+           sigma_n: float=1e-8) -> np.ndarray:
+    """
+    Exponentiated Quadratic Kernel
+    (https://peterroelants.github.io/posts/gaussian-process-kernels/#Exponentiated-quadratic-kernel)
+    
+    Args:
+        X1: Array of m points (m x d).
+        X2: Array of n points (n x d).
+
+    Returns:
+        (m x n) matrix.
+    """
+    sqdist = np.sum(X1**2, 1).reshape(-1, 1) + np.sum(X2**2, 1) - 2 * np.dot(X1, X2.T)
+
+    SQE = np.exp(- 0.5 * sqdist / lengthscale**2)
+
+    C = sigma_f**2
+
+    return C * SQE # + np.eye(X1.shape[0]) * sigma_n**2
