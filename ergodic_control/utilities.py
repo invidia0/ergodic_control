@@ -9,6 +9,14 @@ from skimage.measure import find_contours
 from shapely.geometry import Point, Polygon, MultiPolygon
 from shapely.vectorized import contains
 import matplotlib.pyplot as plt
+from sklearn.metrics.pairwise import pairwise_distances
+from scipy.spatial.distance import pdist, squareform, cdist
+from scipy.linalg import cholesky, solve_triangular
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+import sklearn.gaussian_process.kernels as kernels
+from scipy.signal import convolve2d
+from scipy.ndimage import convolve
 
 def timeit(method):
     """
@@ -25,19 +33,36 @@ def timeit(method):
     return timed
 
 def update_heat(heat, source, local_cooling, map, param):
-    # Compute the laplacian for all grid cells
-    laplacian = (
-        np.roll(heat, 1, axis=0)  # Shift up
-        + np.roll(heat, -1, axis=0)  # Shift down
-        + np.roll(heat, 1, axis=1)  # Shift left
-        + np.roll(heat, -1, axis=1)  # Shift right
-        - 4 * heat
-    ) / param.dx**2
+    # Define the Laplacian kernel
 
-    new_temperature = heat + param.dt * (param.alpha * laplacian + param.source_strength * source)
+    # Convolve heat with the Laplacian kernel
+    # laplacian = convolve2d(heat, param.laplacian_kernel, mode='same', boundary='symm')
+    laplacian = convolve(heat, param.laplacian_kernel, mode='reflect')
+
+    # Update heat equation
+    new_temperature = heat + param.dt * (
+                        param.alpha * laplacian + 
+                        param.source_strength * source -
+                        param.beta * heat
+                        )
     new_temperature[map != 0] = heat[map != 0]  # Keep occupied cells unchanged
 
     return new_temperature
+
+# def update_heat(heat, source, local_cooling, map, param):
+#     # Compute the laplacian for all grid cells
+#     laplacian = (
+#         np.roll(heat, 1, axis=0)  # Shift up
+#         + np.roll(heat, -1, axis=0)  # Shift down
+#         + np.roll(heat, 1, axis=1)  # Shift left
+#         + np.roll(heat, -1, axis=1)  # Shift right
+#         - 4 * heat
+#     ) / param.dx**2
+
+#     new_temperature = heat + param.dt * (param.alpha * laplacian + param.source_strength * source)
+#     new_temperature[map != 0] = heat[map != 0]  # Keep occupied cells unchanged
+
+#     return new_temperature
 
 def gauss_pdf(points, mean, covariance):
   # Calculate the multivariate Gaussian probability
@@ -128,11 +153,12 @@ def colored_line(x, y, c, ax, **lc_kwargs):
 
     return ax.add_collection(lc)
 
+
 def normalize_mat(mat):
     """
     Normalize a matrix to sum to 1.
     """
-    return mat / (np.sum(mat) + 1e-10)
+    return mat / np.add(np.sum(mat), 1e-10)
 
 def min_max_normalize(mat):
     """
@@ -717,6 +743,7 @@ def get_occupied_polygon(map_array):
     else:
         return np.array([])
 
+@timeit
 def clip_polygon_no_convex(agent_pos, fov_polygon, occupied_polygon):
     """
     Clips the field-of-view (fov_polygon) by the occupied area (occupied_polygon),
@@ -846,26 +873,128 @@ def max_pooling(data, downsampling_factor, divisor_range=(2, 5)):
 
     return np.array(pooled_data)
 
-def rbf_white_kernel(X1: np.ndarray, 
-           X2: np.ndarray,
-           lengthscale: float=1.0,
-           sigma_f: float=1.0,
-           sigma_n: float=1e-8) -> np.ndarray:
-    """
-    Exponentiated Quadratic Kernel
-    (https://peterroelants.github.io/posts/gaussian-process-kernels/#Exponentiated-quadratic-kernel)
+
+# def rbf_white_kernel(X1: np.ndarray, 
+#                      X2: np.ndarray,
+#                      lengthscale: float=1.0,
+#                      sigma_f: float=1.0,
+#                      sigma_n: float=1e-8) -> np.ndarray:
+#     """
+#     Exponentiated Quadratic Kernel with optimizations for large matrices.
     
+#     Args:
+#         X1: Array of m points (m x d).
+#         X2: Array of n points (n x d).
+
+#     Returns:
+#         (m x n) matrix.
+#     """
+#     # Precompute squared norms
+#     X1_sqnorm = np.sum(X1**2, axis=1)[:, np.newaxis]  # m x 1
+#     X2_sqnorm = np.sum(X2**2, axis=1)  # n
+
+#     # Efficient computation of pairwise squared Euclidean distance
+#     sqdist = X1_sqnorm + X2_sqnorm - 2 * np.dot(X1, X2.T)
+
+#     # Apply kernel function (Exponentiated Quadratic)
+#     SQE = np.exp(-0.5 * sqdist / lengthscale**2)
+
+#     # Factor out the constant for the kernel
+#     C = sigma_f**2
+
+#     # Return the kernel matrix with the scaling factor
+#     return C * SQE  # + np.eye(X1.shape[0]) * sigma_n**2 (optional regularization)
+
+def rbf_white_kernel(X1: np.ndarray, 
+                     X2: np.ndarray = None,
+                     lengthscale: float = 1.0,
+                     constant: float = 1.0,
+                     sigma_n: float = 1e-8,
+                     diag=False) -> np.ndarray:
+    """
+    Exponentiated Quadratic Kernel with a constant term for large matrices.
+
     Args:
         X1: Array of m points (m x d).
-        X2: Array of n points (n x d).
+        X2: Array of n points (n x d). If None, computes k(X1, X1).
+        lengthscale: Length scale of the kernel.
+        sigma_f: Signal variance (controls amplitude of the RBF kernel).
+        sigma_n: Noise variance (added to diagonal for k(X1, X1)).
+        sigma_c: Constant variance term (added to all kernel entries).
 
     Returns:
-        (m x n) matrix.
+        Kernel matrix of shape (m x n).
     """
-    sqdist = np.sum(X1**2, 1).reshape(-1, 1) + np.sum(X2**2, 1) - 2 * np.dot(X1, X2.T)
+    if diag == False:
+        if X2 is None:
+            # Use pdist for k(X1, X1)
+            scaled_X1 = X1 / lengthscale
+            dists = pdist(scaled_X1, metric="sqeuclidean")
+            K = np.exp(-0.5 * squareform(dists))
+            # Add noise variance to the diagonal
+            np.fill_diagonal(K, np.diag(K) + sigma_n**2)
+        else:
+            # Use cdist for k(X1, X2)
+            scaled_X1 = X1 / lengthscale
+            scaled_X2 = X2 / lengthscale
+            dists = cdist(scaled_X1, scaled_X2, metric="sqeuclidean")
+            K = np.exp(-0.5 * dists)
+            # Add noise variance to the diagonal
+            if X1 is X2:
+                np.fill_diagonal(K, np.diag(K) + sigma_n**2)
 
-    SQE = np.exp(- 0.5 * sqdist / lengthscale**2)
+        # Add constant term
+        K += constant**2
+    else:
+        # Compute the diagonal of the kernel matrix
+        K = np.ones(X1.shape[0]) * constant ** 2
+        K += np.exp(-0.5 * np.sum((X1 / lengthscale) ** 2, axis=1))
+    return K
 
-    C = sigma_f**2
+def gp_predict(X_train: np.ndarray, 
+                y_train: np.ndarray, 
+                X_test: np.ndarray, 
+                kernel: kernels.Kernel):
+    """
+    Optimized GP prediction function with optional covariance or standard deviation.
 
-    return C * SQE # + np.eye(X1.shape[0]) * sigma_n**2
+    Args:
+        X_train: Training data (n_train x d).
+        y_train: Training targets (n_train,).
+        X_test: Test data (n_test x d).
+        lengthscale: Kernel lengthscale.
+        constant: Kernel constant term.
+        sigma_n: Noise variance.
+
+    Returns:
+        mu: Predicted mean (n_test,).
+        std: Predicted standard deviation (n_test,).
+    """
+    # Compute the training kernel matrix
+    K = kernel(X_train) + np.eye(X_train.shape[0]) * 1e-10
+    L = cholesky(K, lower=True, check_finite=False)
+
+    # Compute alpha = (L.T @ L)^-1 @ y_train_normalized
+    alpha = solve_triangular(L, y_train, lower=True)
+    alpha = solve_triangular(L.T, alpha, lower=False)
+
+    # Kernel between training and test points
+    K_s = kernel(X_train, X_test)
+    # Mean prediction
+    mu = K_s.T @ alpha
+
+    V = solve_triangular(L, K_s, lower=True, check_finite=False)
+
+    # Compute variance: diag(K(X_test, X_test)) - sum(V^2)
+    K_ss = kernel.diag(X_test).copy()
+
+    # Use einsum to compute the diagonal of V^T @ V efficiently
+    var = K_ss - np.einsum("ij,ij->j", V, V)
+
+    # Numerical stability for variance
+    var = np.maximum(var, 0)
+
+    # Compute standard deviation
+    std = np.sqrt(var)
+
+    return mu, std
