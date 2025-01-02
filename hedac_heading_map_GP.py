@@ -186,7 +186,7 @@ param.height = map.shape[1]
 param.beta = param.beta / param.area # Eq. 17 - Beta normalized 
 param.local_cooling = param.local_cooling / param.area # Eq. 16 - Local cooling normalized
 
-coverage_density = np.zeros_like(goal_density) # The coverage density
+local_cooling = np.zeros_like(goal_density) # The local cooling
 # coverage_density_hist = np.zeros((param.width, param.height, param.nbDataPoints))
 
 # heat = np.array(goal_density) # The heat is the goal density
@@ -205,20 +205,33 @@ param.kernel_size = coverage_block.shape[0] + param.safety_dist
 
 """
 ===============================
-Gaussian process initialization
+Gaussian process and decay
 ===============================
 """
 # For the moment, no noise is added to the kernel
 noise = 0
 kernel = C(1.0) * RBF(1.0) # + WhiteKernel(1e-3, (1e-8, 1e8))
-gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5, normalize_y=False)#, alpha=noise**2)
+gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=1, normalize_y=False)#, alpha=noise**2)
 pooled_dataset = np.empty((0, 3))
 subset = np.empty((0, 3))
 epsilon = 0.25 # 5% around the mean
-decay = 0
-# Initialize decay array (precompute decay for the maximum history length)
-max_history = 500  # Define a maximum history length (e.g., number of data points you want to keep)
-decay_array = np.exp(-decay * (max_history - np.arange(max_history)))
+# Parameters
+decay = 0.001
+min_decay_value = 1e-3
+# Calculate max_history (number of steps required)
+if decay == 0:
+    max_history = param.nbDataPoints
+    decay_array = np.ones(max_history)
+else:
+    max_history = int(np.ceil(-np.log(min_decay_value) / decay))
+    # Clip the max history to the number of data points
+    max_history = min(max_history, 1000)
+    # Generate the decay array
+    decay_array = np.exp(-decay *  np.arange(max_history + 1))
+print("Max history:", max_history)
+
+# coverage_density_hist = []
+coverage_density_hist = np.zeros((215, 3, param.nbDataPoints))
 
 rng = np.random.RandomState(param.random_seed)
 std_pred_test = np.zeros_like(goal_density)
@@ -245,10 +258,9 @@ for agent in agents:
     last_heading = np.vstack((last_heading, agent.theta))
     last_position = np.vstack((last_position, agent.x))
 
-collisions = []
 for t in range(param.nbDataPoints):
     print(f'\nStep: {t}/{param.nbDataPoints}')
-    local_cooling = np.zeros_like(goal_density)
+    # local_cooling = np.zeros_like(goal_density)
     for agent in agents:
         if param.use_fov:                
             """ Field of View (FOV) """
@@ -264,17 +276,45 @@ for t in range(param.nbDataPoints):
             fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
             fov_probs = utilities.normalize_mat(fov_probs)
 
-            # Update coverage density
-            # coverage_density = np.zeros_like(goal_density) # UNCOMMENT THIS FOR THE DECAY
-            coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs  # Eq. 3 - Coverage density
 
-            # # Append to the history array (store the current coverage density) 
-            # # UNCOMMENT THIS FOR THE DECAY
-            # coverage_density_hist[:, :, t] = coverage_density  # Circular buffer for storing recent densities
-            # # Slice the history for the current window and apply decay
-            # window = coverage_density_hist[:, :, max(0, t - max_history + 1) : t + 1]
-            # print(window.shape)
-            # coverage_density = (window * decay_array[: window.shape[2]]).sum(axis=2)
+            # Create a regular grid from the fov_points
+            coverage_density_hist[:len(fov_points), :2, t] = fov_points
+            coverage_density_hist[:len(fov_points), 2, t] = fov_probs
+
+            # Keep only the most recent max_history entries
+            w = coverage_density_hist[:, :,  max(0, t-max_history):t+1]
+
+            # Initialize coverage density array
+            coverage_density = np.zeros_like(goal_density)
+
+            # Apply decay to values and indices in one step, leveraging broadcasting
+            values = w[:, 2] * decay_array[0:w.shape[2]][::-1]
+
+            # Sum the decayed values to the correct positions in coverage_density
+            indices_x = w[:, 0].astype(int)
+            indices_y = w[:, 1].astype(int)
+
+            np.add.at(coverage_density, (indices_x, indices_y), values)
+
+            if t == 1000:
+                fig = plt.figure(figsize=(15, 5))
+                ax1 = fig.add_subplot(111)
+                ax1.set_aspect('equal')
+                ax1.set_title("Coverage Density")
+                ax1.contourf(grid_x, grid_y, coverage_density, cmap='viridis')
+                plt.show()
+
+
+            # # # Append the current fov_points and fov_probs to coverage_density_hist
+            # coverage_density_hist = coverage_density_hist[-max_history:] + [np.column_stack((fov_points, fov_probs))]
+            # print(f"Coverage density hist length: {len(coverage_density_hist)}")
+            # # # Initialize the coverage density array
+            # coverage_density = np.zeros_like(goal_density)
+            # # Sum backwards with decay
+            # for i, entry in enumerate(reversed(coverage_density_hist)):
+            #     # indices = entry[:, :2].astype(int)
+            #     # values = entry[:, 2] * decay_array[i]
+            #     np.add.at(coverage_density, (entry[:, :2].astype(int)[:, 0], entry[:, :2].astype(int)[:, 1]), entry[:, 2] * decay_array[i])
 
             fov_edges[agent.id] = fov_edges_moved.squeeze()
 
@@ -291,12 +331,9 @@ for t in range(param.nbDataPoints):
             # Pool and remove duplicates
             pooled_dataset = np.unique(np.vstack((pooled_dataset, utilities.max_pooling(samples, 5))), axis=0, return_index=False)
 
-            # ============================= ICRA 2025
-            # K = utilities.rbf_white_kernel(pooled_dataset[:, :2], pooled_dataset[:, :2], 
-            #                                 lengthscale=lengthscale, constant=constant, sigma_n=noise)
+            # ============================= ICRA 2025 Filter
             # K = gpr.kernel_(pooled_dataset[:, :2])
             X_subset, y_subset = pooled_dataset[:, :2], pooled_dataset[:, 2].reshape(-1, 1)
-
 
             # if t > 0:
             #     # # Eigen decomposition and sorting
@@ -389,12 +426,12 @@ for t in range(param.nbDataPoints):
         #     col_start_kernel : col_start_kernel + num_kernel_cols,
         # ]
 
-    # combo_density = utilities.min_max_normalize(combo_density)
+    combo_density = utilities.min_max_normalize(combo_density)
+    diff = combo_density - utilities.min_max_normalize(coverage_density)
+    source = np.maximum(diff, 0)**2 # Source term
+    # diff = utilities.normalize_mat(combo_density) - utilities.normalize_mat(coverage_density)
 
-    # diff = combo_density - utilities.min_max_normalize(coverage_density)**2
-    diff = utilities.normalize_mat(combo_density) - utilities.normalize_mat(coverage_density)
-
-    source = np.maximum(diff, 0) # Source term
+    # source = np.maximum(diff, 0)**2 # Source term
     source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
     heat = utilities.update_heat(heat,
@@ -448,10 +485,10 @@ if param.use_fov:
         # Plot the heading
         ax[1].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
 
-# Plot the collisions
-for t in range(len(collisions)):
-    if collisions[t][0] == t:
-        ax[0].scatter(collisions[t][1][0], collisions[t][1][1], c='red', s=100, marker='x')
+# # Plot the collisions
+# for t in range(len(collisions)):
+#     if collisions[t][0] == t:
+#         ax[0].scatter(collisions[t][1][0], collisions[t][1][1], c='red', s=100, marker='x')
 # Heat
 ax[1].contourf(grid_x, grid_y, heat, cmap='Blues', levels=10)
 delta_quiver = 5
