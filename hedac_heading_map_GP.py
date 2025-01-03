@@ -19,16 +19,6 @@ warnings.filterwarnings("ignore")
 
 np.random.seed(0) # Seed for reproducibility
 
-def generate_repulsive_source(grid, max_distance=10, repulsion_strength=10):
-    """
-    Generate a repulsive source field for the walls based on the distance transform.
-    """
-    # Compute the distance transform (distance to nearest wall)
-    distances = distance_transform_edt(grid)
-    distances = np.clip(distances, 0, max_distance)  # Clip the distances to a maximum value
-    repulsive_source = repulsion_strength / (distances + 1)  # Repulsion strength inversely proportional to distance
-    return repulsive_source
-
 """
 Load the map
 """
@@ -65,7 +55,7 @@ param = lambda: None
 for key, value in param_data.items():
     setattr(param, key, value)
 
-param.max_dtheta = np.pi / 18 # Maximum angular velocity (rad/s)
+param.max_dtheta = np.pi / 34 # Maximum angular velocity (rad/s)
 param.nbResX = map.shape[0] # Number of cells in the x-direction
 param.nbResY = map.shape[1] # Number of cells in the y-direction
 
@@ -81,7 +71,7 @@ param.dt = min(
 )  # for the stability of implicit integration of Heat Equation
 
 agents = []
-x0_array = np.array([[180,180],
+x0_array = np.array([[50,123],
                [20,80],
                [80,80]])
 for i in range(param.nbAgents):
@@ -188,6 +178,7 @@ param.local_cooling = param.local_cooling / param.area # Eq. 16 - Local cooling 
 
 local_cooling = np.zeros_like(goal_density) # The local cooling
 # coverage_density_hist = np.zeros((param.width, param.height, param.nbDataPoints))
+coverage_density = np.zeros_like(goal_density) # The coverage density
 
 # heat = np.array(goal_density) # The heat is the goal density
 param.laplacian_kernel = np.array([[0, 1, 0],
@@ -225,7 +216,7 @@ if decay == 0:
 else:
     max_history = int(np.ceil(-np.log(min_decay_value) / decay))
     # Clip the max history to the number of data points
-    max_history = min(max_history, 1000)
+    max_history = min(max_history, 6000)
     # Generate the decay array
     decay_array = np.exp(-decay *  np.arange(max_history + 1))
 print("Max history:", max_history)
@@ -246,6 +237,12 @@ lengthscale = gpr.kernel_.get_params()['k2__length_scale']
 print("Pre-training finished.")
 print(f"Lengthscale: {lengthscale}, Constant: {constant}\n\n")
 subset_hash_old = 0
+
+"""
+DEBUG
+"""
+grad = 0
+
 """
 ===============================
 Main Loop
@@ -276,45 +273,25 @@ for t in range(param.nbDataPoints):
             fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
             fov_probs = utilities.normalize_mat(fov_probs)
 
+            coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs # Eq. 3 - Coverage density
+            # # Create a regular grid from the fov_points
+            # coverage_density_hist[:len(fov_points), :2, t] = fov_points
+            # coverage_density_hist[:len(fov_points), 2, t] = fov_probs
 
-            # Create a regular grid from the fov_points
-            coverage_density_hist[:len(fov_points), :2, t] = fov_points
-            coverage_density_hist[:len(fov_points), 2, t] = fov_probs
+            # # Keep only the most recent max_history entries
+            # w = coverage_density_hist[:, :,  max(0, t-max_history):t+1]
 
-            # Keep only the most recent max_history entries
-            w = coverage_density_hist[:, :,  max(0, t-max_history):t+1]
-
-            # Initialize coverage density array
-            coverage_density = np.zeros_like(goal_density)
-
-            # Apply decay to values and indices in one step, leveraging broadcasting
-            values = w[:, 2] * decay_array[0:w.shape[2]][::-1]
-
-            # Sum the decayed values to the correct positions in coverage_density
-            indices_x = w[:, 0].astype(int)
-            indices_y = w[:, 1].astype(int)
-
-            np.add.at(coverage_density, (indices_x, indices_y), values)
-
-            if t == 1000:
-                fig = plt.figure(figsize=(15, 5))
-                ax1 = fig.add_subplot(111)
-                ax1.set_aspect('equal')
-                ax1.set_title("Coverage Density")
-                ax1.contourf(grid_x, grid_y, coverage_density, cmap='viridis')
-                plt.show()
-
-
-            # # # Append the current fov_points and fov_probs to coverage_density_hist
-            # coverage_density_hist = coverage_density_hist[-max_history:] + [np.column_stack((fov_points, fov_probs))]
-            # print(f"Coverage density hist length: {len(coverage_density_hist)}")
-            # # # Initialize the coverage density array
+            # # Initialize coverage density array
             # coverage_density = np.zeros_like(goal_density)
-            # # Sum backwards with decay
-            # for i, entry in enumerate(reversed(coverage_density_hist)):
-            #     # indices = entry[:, :2].astype(int)
-            #     # values = entry[:, 2] * decay_array[i]
-            #     np.add.at(coverage_density, (entry[:, :2].astype(int)[:, 0], entry[:, :2].astype(int)[:, 1]), entry[:, 2] * decay_array[i])
+
+            # # Apply decay to values and indices in one step, leveraging broadcasting
+            # values = w[:, 2] * decay_array[0:w.shape[2]][::-1]
+
+            # # Sum the decayed values to the correct positions in coverage_density
+            # indices_x = w[:, 0].astype(int)
+            # indices_y = w[:, 1].astype(int)
+
+            # np.add.at(coverage_density, (indices_x, indices_y), values)
 
             fov_edges[agent.id] = fov_edges_moved.squeeze()
 
@@ -383,6 +360,8 @@ for t in range(param.nbDataPoints):
                 # Smooth
                 mu_pred = np.exp(mu_pred)
                 std_pred = np.exp(std_pred)
+                # mu_pred = 10**mu_pred
+                # std_pred = 10**std_pred
 
                 combo = mu_pred + std_pred
                 combo_density = np.where(map == 0, combo, 0)
@@ -426,12 +405,14 @@ for t in range(param.nbDataPoints):
         #     col_start_kernel : col_start_kernel + num_kernel_cols,
         # ]
 
-    combo_density = utilities.min_max_normalize(combo_density)
-    diff = combo_density - utilities.min_max_normalize(coverage_density)
+    combo_density = utilities.normalize_mat(combo_density)
+    diff = combo_density - utilities.normalize_mat(coverage_density)
     source = np.maximum(diff, 0)**2 # Source term
-    # diff = utilities.normalize_mat(combo_density) - utilities.normalize_mat(coverage_density)
+    # diff = utilities.min_max_normalize(utilities.normalize_mat(combo_density)) \
+    #         - utilities.min_max_normalize(utilities.normalize_mat(coverage_density))
 
-    # source = np.maximum(diff, 0)**2 # Source term
+    # source = np.maximum(diff, 0) # Source term
+    # source = np.exp(source) - 1
     source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
     heat = utilities.update_heat(heat,
@@ -442,6 +423,10 @@ for t in range(param.nbDataPoints):
 
     gradient_y, gradient_x = np.gradient(heat.T, 1, 1)
 
+    gradient_x = gradient_x / np.linalg.norm(gradient_x)
+    gradient_y = gradient_y / np.linalg.norm(gradient_y)
+
+    # obstacles = np.empty((0, 2))
     for agent in agents:
         # Store the last position and heading
         last_heading[agent.id] = agent.theta
@@ -451,6 +436,39 @@ for t in range(param.nbDataPoints):
             param, agent, gradient_x, gradient_y, map
         )
         agent.update(grad)
+    
+    # Check if the agent kernel contains a wall
+    # if np.any(occ_map[(agent.x[0] - param.kernel_size // 2).astype(int):(agent.x[0] + param.kernel_size // 2).astype(int),
+    #                   (agent.x[1] - param.kernel_size // 2).astype(int):(agent.x[1] + param.kernel_size // 2).astype(int)]) == 1:
+    #     print("Collision detected!")
+    # if t % 2000 == 0 or obstacles.size > 0:
+
+    #     # Check what's happening with the gradient and why is the robot pushed away from that area
+    #     print(f"Step: {t}")
+
+    #     fig = plt.figure(figsize=(15, 5))
+    #     # Plot the mean, std, combo, diff and source
+    #     ax1 = fig.add_subplot(111)
+    #     ax1.set_aspect('equal')
+    #     ax1.contourf(grid_x, grid_y, heat, cmap='Blues')
+    #     ax1.fill(occ_map[:, 0], occ_map[:, 1], 'k')
+    #     ax1.scatter(agents[0].x[0], agents[0].x[1], c='black', s=100, marker='o')
+    #     ax1.quiver(agents[0].x[0], agents[0].x[1], np.cos(agents[0].theta), np.sin(agents[0].theta), scale = 2, scale_units='inches', color='red', alpha=0.5)
+    #     ax1.set_title("Agent")
+    #     delta_quiver = 5
+    #     grad_x = gradient_x[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_x[::delta_quiver, ::delta_quiver])
+    #     grad_y = gradient_y[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_y[::delta_quiver, ::delta_quiver])
+    #     qx = np.arange(0, map.shape[0], delta_quiver)
+    #     qy = np.arange(0, map.shape[1], delta_quiver)
+    #     q = ax1.quiver(qx, qy, grad_x, grad_y, scale=1, scale_units='inches', alpha=0.5)
+    #     # Plot the gradient (grad) and the agent
+    #     ax1.quiver(agents[0].x[0], agents[0].x[1], grad[0], grad[1])
+    #     # Plot the gradient (gradient_x, gradient_y) at the agent's position
+    #     ax1.quiver(agents[0].x[0], agents[0].x[1], gradient_x[agents[0].x[0].astype(int), agents[0].x[1].astype(int)], gradient_y[agents[0].x[0].astype(int), agents[0].x[1].astype(int)], color='green')
+    #     ax1.add_patch(plt.Rectangle((agents[0].x[0] - param.kernel_size // 2, agents[0].x[1] - param.kernel_size // 2), param.kernel_size, param.kernel_size, fill=None, edgecolor='red'))
+    #     ax1.scatter(obstacles[:, 0], obstacles[:, 1], c='red', s=100, marker='x')
+    #     plt.show()
+
 
 plt.close("all")
 fig, ax = plt.subplots(1, 2, figsize=(12, 5))

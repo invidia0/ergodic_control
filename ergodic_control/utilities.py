@@ -451,51 +451,113 @@ def clamp_kernel_1d(x, low_lim, high_lim, kernel_size, occupancy_grid=None, axis
 
 def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid):
     """
-    Calculate movement direction of the agent by considering the gradient
-    of the temperature field near the agent, avoiding walls.
+    Calculate movement direction of the agent considering heading,
+    the gradient of the field, and wall avoidance.
     """
-    # Find agent position on the grid as integer indices
     adjusted_position = agent.x
-    col, row = adjusted_position.astype(int)  # x corresponds to col, y to row
-
+    x, y = adjusted_position.astype(int)
+    heading_vector = np.array([np.cos(agent.theta), np.sin(agent.theta)])
     gradient = np.zeros(2)
 
-    # Check if agent is inside the grid
-    if 0 <= row < param.height and 0 <= col < param.width:
-        # Interpolate the gradient for the agent's position
+    if 0 <= x < param.width and 0 <= y < param.height:
         gradient[0] = bilinear_interpolation(gradient_x, adjusted_position)
         gradient[1] = bilinear_interpolation(gradient_y, adjusted_position)
 
-    # Always check for walls within the kernel size and push the agent away
-    wall_boundary_gradient = 2
     kernel_radius = param.kernel_size // 2
+    wall_boundary_gradient = 1e-4
+    sigma = kernel_radius
 
-    wall_effect_x = 0
-    wall_effect_y = 0
+    wall_effect = np.zeros(2)
+    #obstacles = np.empty((0, 2))
+    for dx in range(-kernel_radius, kernel_radius + 1):
+        for dy in range(-kernel_radius, kernel_radius + 1):
+            next_x = x + dx
+            next_y = y + dy
 
-    for dr in range(-kernel_radius, kernel_radius + 1):
-        for dc in range(-kernel_radius, kernel_radius + 1):
-            neighbor_row = row + dr
-            neighbor_col = col + dc
+            if 0 <= next_x < param.width and 0 <= next_y < param.height:
+                if occupancy_grid[next_x, next_y] == 1:
+                    #obstacles = np.vstack([obstacles, [next_x, next_y]])
+                    distance = np.sqrt(dx**2 + dy**2)
+                    if distance > 0:
+                        influence = wall_boundary_gradient * np.exp(-distance**2 / (2 * sigma**2))
+                        direction = np.array([-dx / distance, -dy / distance])  # Away from the wall
+                        wall_effect += influence * direction
 
-            if 0 <= neighbor_row < param.height and 0 <= neighbor_col < param.width:
-                if occupancy_grid[neighbor_row, neighbor_col] == 1:  # Wall detected
-                    # Calculate influence based on proximity (closer walls have stronger effect)
-                    distance = max(abs(dr), abs(dc))
-                    influence = wall_boundary_gradient / (distance + 1e-5)  # Avoid divide by zero
-                    wall_effect_x += influence * (-dc)  # Push away from the wall
-                    wall_effect_y += influence * (-dr)  # Push away from the wall
+    # wall_effect_norm = np.linalg.norm(wall_effect)
+    # if wall_effect_norm > 0:
+    #     wall_effect /= wall_effect_norm
 
-    # Combine the interpolated gradient and wall avoidance effect
-    gradient[0] += wall_effect_x
-    gradient[1] += wall_effect_y
+    # Project wall effect onto the heading
+    parallel_effect = np.dot(wall_effect, heading_vector) * heading_vector
+    perpendicular_effect = wall_effect - parallel_effect
+
+    # Scale perpendicular effect to prevent sharp turns
+    perpendicular_scaling = 0.5  # Adjust sensitivity
+    wall_effect = (1 - perpendicular_scaling) * parallel_effect + perpendicular_scaling * perpendicular_effect
+
+    # Combine interpolated gradient and wall effect
+    gradient += wall_effect
 
     # Normalize the resulting gradient to prevent erratic movements
     norm = np.linalg.norm(gradient)
     if norm > 0:
         gradient /= norm
 
-    return gradient
+    return gradient#, obstacles
+
+# def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid):
+#     """
+#     Calculate movement direction of the agent by considering the gradient
+#     of the temperature field near the agent, avoiding walls.
+#     """
+#     # Find agent position on the grid as integer indices
+#     adjusted_position = agent.x
+#     col, row = adjusted_position.astype(int)  # x corresponds to col, y to row
+
+#     gradient = np.zeros(2)
+
+#     # Check if agent is inside the grid
+#     if 0 <= row < param.width and 0 <= col < param.height:
+#         # Interpolate the gradient for the agent's position
+#         gradient[0] = bilinear_interpolation(gradient_x, adjusted_position)
+#         gradient[1] = bilinear_interpolation(gradient_y, adjusted_position)
+
+#     # Always check for walls within the kernel size and push the agent away
+#     kernel_radius = param.kernel_size // 2
+#     wall_boundary_gradient = 10  # Scaling factor for wall influence
+#     sigma = kernel_radius  # Spread of the Gaussian influence
+
+#     wall_effect_x = 0
+#     wall_effect_y = 0
+
+#     for dr in range(-kernel_radius, kernel_radius + 1):
+#         for dc in range(-kernel_radius, kernel_radius + 1):
+#             neighbor_row = row + dr
+#             neighbor_col = col + dc
+
+#             if 0 <= neighbor_row < param.width and 0 <= neighbor_col < param.height:
+#                 if occupancy_grid[neighbor_row, neighbor_col] == 1:  # Wall detected
+#                     # Calculate the Euclidean distance
+#                     distance = np.sqrt(dr**2 + dc**2)
+#                     if distance > 0:
+#                         # Gaussian influence based on distance
+#                         influence = wall_boundary_gradient * np.exp(-distance**2 / (2 * sigma**2))
+#                         # Normalized direction away from the wall
+#                         direction_x = -dc / distance
+#                         direction_y = -dr / distance
+#                         wall_effect_x += influence * direction_x
+#                         wall_effect_y += influence * direction_y
+
+#     # Combine the interpolated gradient and wall avoidance effect
+#     gradient[0] += wall_effect_x
+#     gradient[1] += wall_effect_y
+
+#     # Normalize the resulting gradient to prevent erratic movements
+#     norm = np.linalg.norm(gradient)
+#     if norm > 0:
+#         gradient /= norm
+
+#     return gradient
 
 def draw_fov(pos, theta, fov, fov_depth):
     """
