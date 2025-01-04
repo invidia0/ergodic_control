@@ -114,13 +114,12 @@ class SecondOrderAgentWithHeading:
         # Update heading to align with gradient
         heading_error = theta_desired - self.theta
         # Ensure the error is within [-pi, pi]
-        if heading_error > np.pi:
-            heading_error -= 2 * np.pi
-        elif heading_error < -np.pi:
-            heading_error += 2 * np.pi
+        heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
+
 
         self.dtheta = np.clip(heading_error / self.dt, -self.max_dtheta, self.max_dtheta)
         self.theta += self.dtheta * self.dt
+        self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi  # Keep theta within [-pi, pi]
 
         # Update velocity magnitude
         self.dx += acceleration * self.dt

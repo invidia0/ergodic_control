@@ -4,7 +4,7 @@
     "dx": 0.1,
     "eps": 0.1,
     "xlim": [0, 1],
-    "nbDataPoints":  45000,
+    "nbDataPoints":  15000,
     "nbGaussian": 15,
     "nbParticles": 100,
     "nbVar": 2,
@@ -13,14 +13,17 @@
     "min_kernel_val": 1e-8,
     "agent_radius": 30,
     "safety_dist": 5,
+    "boundary_safe_dist": 10,
     "max_dx": 1,
     "max_ddx": 0.2,
     "max_dtheta": 0.785,
     "use_fov": 1,
     "fov_deg": 90,
     "fov_depth": 20,
+    "wall_boundary_gradient": 1e-4,
+    "boundary_gradient": 1,
     "local_cooling": 1e2,
-    "beta": 1e1,
+    "beta": 100,
     "source_strength": 1,
-    "alpha": 1e3
+    "alpha": 1
 }
