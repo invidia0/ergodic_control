@@ -340,33 +340,33 @@ def offset(mat, i, j):
     cols = cols - 2
     return mat[1 + i : 1 + i + rows, 1 + j : 1 + j + cols]
 
-# def clamp_kernel_1d(x, low_lim, high_lim, kernel_size):
-#     """
-#     A function to calculate the start and end indices
-#     of the kernel around the agent that is inside the grid
-#     i.e. clamp the kernel by the grid boundaries
-#     """
-#     start_kernel = low_lim
-#     start_grid = x - (kernel_size // 2)
-#     num_kernel = kernel_size
-#     # bound the agent to be inside the grid
-#     if x <= -(kernel_size // 2):
-#         x = -(kernel_size // 2) + 1
-#     elif x >= high_lim + (kernel_size // 2):
-#         x = high_lim + (kernel_size // 2) - 1
+def clamp_kernel_1d(x, low_lim, high_lim, kernel_size):
+    """
+    A function to calculate the start and end indices
+    of the kernel around the agent that is inside the grid
+    i.e. clamp the kernel by the grid boundaries
+    """
+    start_kernel = low_lim
+    start_grid = x - (kernel_size // 2)
+    num_kernel = kernel_size
+    # bound the agent to be inside the grid
+    if x <= -(kernel_size // 2):
+        x = -(kernel_size // 2) + 1
+    elif x >= high_lim + (kernel_size // 2):
+        x = high_lim + (kernel_size // 2) - 1
 
-#     # if agent kernel around the agent is outside the grid,
-#     # clamp the kernel by the grid boundaries
-#     if start_grid < low_lim:
-#         start_kernel = kernel_size // 2 - x - 1
-#         num_kernel = kernel_size - start_kernel - 1
-#         start_grid = low_lim
-#     elif start_grid + kernel_size >= high_lim:
-#         num_kernel -= x - (high_lim - num_kernel // 2 - 1)
-#     if num_kernel > low_lim:
-#         grid_indices = slice(start_grid, start_grid + num_kernel)
+    # if agent kernel around the agent is outside the grid,
+    # clamp the kernel by the grid boundaries
+    if start_grid < low_lim:
+        start_kernel = kernel_size // 2 - x - 1
+        num_kernel = kernel_size - start_kernel - 1
+        start_grid = low_lim
+    elif start_grid + kernel_size >= high_lim:
+        num_kernel -= x - (high_lim - num_kernel // 2 - 1)
+    if num_kernel > low_lim:
+        grid_indices = slice(start_grid, start_grid + num_kernel)
 
-#     return grid_indices, start_kernel, num_kernel
+    return grid_indices, start_kernel, num_kernel
 
 def border_interpolate(x, length, border_type):
     """
@@ -399,43 +399,6 @@ def bilinear_interpolation(grid, pos):
     # Interpolate on y-axis
     c = c01 * (1 - yd) + c11 * yd
     return c
-
-def clamp_kernel_1d(x, low_lim, high_lim, kernel_size, occupancy_grid=None, axis=None):
-    """
-    Calculate the start and end indices of the kernel around the agent
-    that is inside the grid while avoiding walls.
-    """
-    start_kernel = low_lim
-    start_grid = x - (kernel_size // 2)
-    num_kernel = kernel_size
-
-    # Bound the agent to be inside the grid
-    if x <= -(kernel_size // 2):
-        x = -(kernel_size // 2) + 1
-    elif x >= high_lim + (kernel_size // 2):
-        x = high_lim + (kernel_size // 2) - 1
-
-    # Clamp the kernel to grid boundaries
-    if start_grid < low_lim:
-        start_kernel = kernel_size // 2 - x - 1
-        num_kernel = kernel_size - start_kernel - 1
-        start_grid = low_lim
-    elif start_grid + kernel_size >= high_lim:
-        num_kernel -= x - (high_lim - num_kernel // 2 - 1)
-    if num_kernel > low_lim:
-        grid_indices = slice(start_grid, start_grid + num_kernel)
-
-    # Avoid walls if occupancy grid is provided
-    if occupancy_grid is not None and axis is not None:
-        for i in range(grid_indices.start, grid_indices.stop):
-            if axis == "row" and occupancy_grid[i, x] == 1:  # Avoid walls in rows
-                start_grid = max(i - 1, low_lim)
-                num_kernel -= 1
-            elif axis == "col" and occupancy_grid[x, i] == 1:  # Avoid walls in cols
-                start_grid = max(i - 1, low_lim)
-                num_kernel -= 1
-
-    return grid_indices, start_kernel, num_kernel
 
 def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid):
     """
@@ -527,63 +490,6 @@ def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid)
         gradient /= norm
 
     return gradient #, obstacles
-
-# def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid):
-#     """
-#     Calculate movement direction of the agent considering heading,
-#     the gradient of the field, and wall avoidance.
-#     """
-#     x, y = agent.x.astype(int)
-#     heading_vector = np.array([np.cos(agent.theta), np.sin(agent.theta)])
-#     gradient = np.zeros(2)
-
-#     if 0 <= x < param.width and 0 <= y < param.height:
-#         gradient[0] = bilinear_interpolation(gradient_x, agent.x)
-#         gradient[1] = bilinear_interpolation(gradient_y, agent.x)
-
-#     kernel_radius = param.kernel_size // 2
-#     wall_effect = np.zeros(2)
-#     #obstacles = np.empty((0, 2))
-#     for dx in range(-kernel_radius, kernel_radius + 1):
-#         for dy in range(-kernel_radius, kernel_radius + 1):
-#             next_x = x + dx
-#             next_y = y + dy
-
-#             if 0 <= next_x < param.width and 0 <= next_y < param.height:
-#                 if occupancy_grid[next_x, next_y] == 1:
-#                     #obstacles = np.vstack([obstacles, [next_x, next_y]])
-#                     distance = np.sqrt(dx**2 + dy**2)
-#                     if distance > 0:
-#                         influence = param.wall_boundary_gradient * np.exp(-distance**2 / (2 * kernel_radius**2))
-#                         direction = np.array([-dx / distance, -dy / distance])  # Away from the wall
-#                         wall_effect += influence * direction
-
-#     # Project wall effect onto the heading
-#     parallel_effect = np.dot(wall_effect, heading_vector) * heading_vector
-#     perpendicular_effect = wall_effect - parallel_effect
-
-#     # Scale perpendicular effect to prevent sharp turns
-#     perpendicular_scaling = 0.5  # Adjust sensitivity
-#     wall_effect = (1 - perpendicular_scaling) * parallel_effect + perpendicular_scaling * perpendicular_effect
-
-#     # Combine interpolated gradient and wall effect
-#     gradient += wall_effect
-
-#     if y <= param.boundary_safe_dist:
-#         gradient[1] += param.boundary_gradient
-#     elif y >= param.height - param.boundary_safe_dist:
-#         gradient[1] -= param.boundary_gradient
-#     if x <= param.boundary_safe_dist:
-#         gradient[0] += param.boundary_gradient
-#     elif x >= param.width - param.boundary_safe_dist:
-#         gradient[0] -= param.boundary_gradient
-
-#     # Normalize the resulting gradient to prevent erratic movements
-#     norm = np.linalg.norm(gradient)
-#     if norm > 0:
-#         gradient /= norm
-
-#     return gradient#, obstacles
 
 def draw_fov(pos, theta, fov, fov_depth):
     """
@@ -1135,9 +1041,10 @@ def compute_combo(
     mu = min_max_normalize(mu.reshape(map.shape))
     std = min_max_normalize(std.reshape(map.shape))
 
-    _std = np.copy(std)
+    _std_cp = np.copy(std)
 
-    combo = np.exp(mu) + np.exp(std)
+    # combo = np.exp(mu) + np.exp(std)
+    combo = 10**mu + 10**std
     combo_density = np.where(map == 0, combo, 0) # Only keep the density on free cells
 
-    return combo_density, _std
+    return combo_density, mu, std, _std_cp

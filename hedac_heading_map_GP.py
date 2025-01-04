@@ -13,6 +13,7 @@ from scipy.interpolate import griddata
 from scipy.ndimage import distance_transform_edt
 import time
 from scipy.sparse.linalg import eigsh
+import gzip
 
 warnings.filterwarnings("ignore")
 
@@ -57,7 +58,7 @@ param = lambda: None
 for key, value in param_data.items():
     setattr(param, key, value)
 
-param.max_dtheta = np.pi / 34 # Maximum angular velocity (rad/s)
+param.max_dtheta = np.pi / 32 # Maximum angular velocity (rad/s)
 param.nbResX = map.shape[0] # Number of cells in the x-direction
 param.nbResY = map.shape[1] # Number of cells in the y-direction
 
@@ -85,7 +86,7 @@ for i in range(param.nbAgents):
                                                 max_dx=param.max_dx,
                                                 max_ddx=param.max_ddx,
                                                 max_dtheta=param.max_dtheta,
-                                                dt=1,
+                                                dt=param.dt_agent,
                                                 id=i)
     agents.append(agent)
 
@@ -109,52 +110,6 @@ norm_density_map = utilities.min_max_normalize(norm_density_map)
 # Compute the area of the map
 cell_area = param.dx * param.dx
 param.area = np.sum(map == 0) * cell_area
-
-"""
-Smoothing/Spreading RBF Approximation 
-Probably not the best way to do it, but it works, also not sure if this is useful...
-"""
-# def kernel_matrix(X, sigma=1):
-#     """Compute the kernel (RBF) matrix."""
-#     eps = 1 / (2 * sigma ** 2)
-#     return np.exp(-eps * np.linalg.norm(X[:, np.newaxis] - X[np.newaxis, :], axis=2) ** 2)
-
-# def fit(G, d):
-#     """Fit the RBF weights."""
-#     return np.dot(np.linalg.pinv(G), d)
-
-# def predict(inputs, X_train, m, sigma=1):
-#     """Predict values using the RBF approximation."""
-#     eps = 1 / (2 * sigma ** 2)
-#     pairwise_distances = np.linalg.norm(inputs[:, np.newaxis, :] - X_train[np.newaxis, :, :], axis=2)
-#     K = np.exp(-eps * pairwise_distances ** 2)
-#     return K @ m
-
-# # Sampling from the density map
-# N = 100 # Number of basis functions to use
-# sampled_indices = np.random.choice(len(free_cells), size=N, replace=False)
-
-# # Collect sampled values and their corresponding densities
-# samples = free_cells[sampled_indices]
-# d = np.array([density_map[tuple(cell)] for cell in samples]).reshape(-1, 1)
-
-# # RBF shape parameter
-# sigma = 20
-
-# # Compute the kernel matrix and fit RBF weights
-# G = kernel_matrix(samples, sigma)
-# m = fit(G, d)
-
-# # Predict the goal density using RBFs
-# S = predict(free_cells, samples, m, sigma)
-
-# # Reshape the result to the map's shape
-# S_map = np.full(map.shape, np.nan)  # Initialize map with NaN
-# S_map[free_cells[:, 0], free_cells[:, 1]] = S.flatten()
-# S_map = np.abs(S_map)
-# S_map = np.nan_to_num(S_map)
-# # Normalize and finalize the goal density
-# S_map = S_map.astype(np.float128) / np.sum(S_map, dtype=np.float128)
 
 goal_density = np.zeros_like(map)
 goal_density[map == 0] = norm_density_map
@@ -200,10 +155,8 @@ pooled_dataset = np.empty((0, 3))
 subset = np.empty((0, 3))
 epsilon = 0.25 # 5% around the mean
 # Parameters
-decay = 1e-8
-min_decay_value = 1e-8
 
-decay_array = np.exp(-decay *  np.arange(param.nbDataPoints))
+decay_array = np.exp(-param.decay *  np.arange(param.nbDataPoints))
 
 coverage_density_hist = np.memmap('coverage_density_hist.dat', dtype='int32', mode='w+', shape=(215, 2, param.nbDataPoints))
 coverage_density_prob_hist = np.memmap('coverage_density_prob_hist.dat', dtype='float32', mode='w+', shape=(215, param.nbDataPoints))
@@ -229,6 +182,7 @@ subset_hash_old = 0
 DEBUG
 """
 grad = 0
+# _mu_hist = np.empty
 
 """
 ===============================
@@ -244,10 +198,11 @@ for agent in agents:
 
 for t in range(param.nbDataPoints):
     print(f'\nStep: {t}/{param.nbDataPoints}')
-    # local_cooling = np.zeros_like(goal_density)
+    local_cooling = np.zeros_like(goal_density)
     for agent in agents:
         if param.use_fov:                
             """ Field of View (FOV) """
+            # Probably we can avoid clipping if we handle the collected samples for the GP?
             fov_edges_moved = utilities.relative_move_fov(fov_edges[agent.id], 
                                                         last_position[agent.id], 
                                                         last_heading[agent.id], 
@@ -264,6 +219,7 @@ for t in range(param.nbDataPoints):
             coverage_density_hist[:len(fov_points), :, t] = fov_points # Save the points for the decay
             coverage_density_prob_hist[:len(fov_points), t] = fov_probs # Save the probabilities for the decay
 
+            coverage_density = np.zeros_like(goal_density)
             utilities.apply_decay(coverage_density, coverage_density_hist, coverage_density_prob_hist, t, 500, decay_weights)
   
             fov_edges[agent.id] = fov_edges_moved
@@ -284,11 +240,11 @@ for t in range(param.nbDataPoints):
 
                         # gpr.fit(subset[:, :2], subset[:, 2])
 
-                        combo_density, std_pred_test = utilities.compute_combo(subset, grid, map, gpr.kernel_)
+                        combo_density, mu, std, std_pred_test = utilities.compute_combo(subset, grid, map, gpr.kernel_)
             else:
                 pooled_dataset = np.unique(np.vstack((pooled_dataset, utilities.max_pooling(samples, 5))), axis=0, return_index=False)
                 subset = np.hstack((pooled_dataset[:, :2], pooled_dataset[:, 2].reshape(-1, 1)))
-                combo_density, std_pred_test = utilities.compute_combo(subset, grid, map, gpr.kernel_)
+                combo_density, mu, std, std_pred_test = utilities.compute_combo(subset, grid, map, gpr.kernel_)
 
             print(f"Subset shape: {subset.shape}")
 
@@ -320,35 +276,36 @@ for t in range(param.nbDataPoints):
                 heat = np.array(utilities.normalize_mat(combo_density))
         else:
             """ Agent block # SKIP FOR THE MOMENT!! """
-            # adjusted_position = agent.x / param.dx
             adjusted_position = agent.x
-            col, row = adjusted_position.astype(int)
-            row_indices, row_start_kernel, num_kernel_rows = utilities.clamp_kernel_1d(
-                row, 0, param.height, param.kernel_size
+            x, y = adjusted_position.astype(int)
+            # Don't care if hits walls cause handled in heat eq.
+            x_indices, x_start_kernel, num_kernel_dx = utilities.clamp_kernel_1d(
+                x, 0, param.width, param.kernel_size
             )
-            col_indices, col_start_kernel, num_kernel_cols = utilities.clamp_kernel_1d(
-                col, 0, param.width, param.kernel_size
+            y_indices, y_start_kernel, num_kernel_dy = utilities.clamp_kernel_1d(
+                y, 0, param.height, param.kernel_size
             )
 
-            coverage_density[row_indices, col_indices] += coverage_block[
-                row_start_kernel : row_start_kernel + num_kernel_rows,
-                col_start_kernel : col_start_kernel + num_kernel_cols,
-            ] # Eq. 3 - Coverage density
+            local_cooling[x_indices, y_indices] += coverage_block[
+                x_start_kernel : x_start_kernel + num_kernel_dx,
+                y_start_kernel : y_start_kernel + num_kernel_dy,
+            ]
 
-        # """ Local cooling """
-        # adjusted_position = agent.x
-        # col, row = adjusted_position.astype(int)
-        # row_indices, row_start_kernel, num_kernel_rows = utilities.clamp_kernel_1d(
-        #     row, 0, param.height, param.kernel_size, map, axis="row"
-        # )
-        # col_indices, col_start_kernel, num_kernel_cols = utilities.clamp_kernel_1d(
-        #     col, 0, param.width, param.kernel_size, map, axis="col"
-        # )
+        """ Local cooling """
+        adjusted_position = agent.x
+        x, y = adjusted_position.astype(int)
+        # Don't care if hits walls cause handled in heat eq.
+        x_indices, x_start_kernel, num_kernel_dx = utilities.clamp_kernel_1d(
+            x, 0, param.width, param.kernel_size
+        )
+        y_indices, y_start_kernel, num_kernel_dy = utilities.clamp_kernel_1d(
+            y, 0, param.height, param.kernel_size
+        )
 
-        # local_cooling[row_indices, col_indices] += coverage_block[
-        #     row_start_kernel : row_start_kernel + num_kernel_rows,
-        #     col_start_kernel : col_start_kernel + num_kernel_cols,
-        # ]
+        local_cooling[x_indices, y_indices] += coverage_block[
+            x_start_kernel : x_start_kernel + num_kernel_dx,
+            y_start_kernel : y_start_kernel + num_kernel_dy,
+        ]
 
     combo_density = utilities.normalize_mat(combo_density)
     diff = combo_density - utilities.normalize_mat(coverage_density)
@@ -377,6 +334,8 @@ for t in range(param.nbDataPoints):
             param, agent, gradient_x, gradient_y, map
         )
         agent.update(grad)
+
+
 
 plt.close("all")
 fig, ax = plt.subplots(1, 2, figsize=(12, 5))
@@ -427,7 +386,7 @@ q = ax[1].quiver(qx, qy, grad_x, grad_y, scale=1, scale_units='inches')
 plt.suptitle(f'Timestep: {t}')
 plt.tight_layout()
 # plt.pause(0.0001)
-# plt.savefig("test2.png", dpi=300)
+plt.savefig("test2.png", dpi=300)
 plt.show()
 
 fig = plt.figure(figsize=(15, 5))
@@ -435,11 +394,11 @@ fig = plt.figure(figsize=(15, 5))
 ax1 = fig.add_subplot(441)
 ax1.set_aspect('equal')
 ax1.set_title("Mean")
-# ax1.contourf(grid_x, grid_y, mu, cmap='Blues')
+ax1.contourf(grid_x, grid_y, mu, cmap='Blues')
 ax2 = fig.add_subplot(442)
 ax2.set_aspect('equal')
 ax2.set_title("Std")
-# ax2.contourf(grid_x, grid_y, std_pred, cmap='Reds')
+ax2.contourf(grid_x, grid_y, std, cmap='Reds')
 ax3 = fig.add_subplot(443)
 ax3.set_aspect('equal')
 ax3.set_title("Combo")
@@ -464,5 +423,5 @@ ax7.contourf(grid_x, grid_y, coverage_density, cmap='Greens')
 # Remove padding between subplots
 plt.tight_layout()
 plt.subplots_adjust(top=0.9)
-# plt.savefig("results.png", dpi=300)
+plt.savefig("results2.png", dpi=300)
 plt.show()
