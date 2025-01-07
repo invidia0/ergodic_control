@@ -6,15 +6,8 @@ import warnings
 from ergodic_control import models, utilities
 import json
 import os
-from scipy.stats import multivariate_normal as mvn
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
-from scipy.interpolate import griddata
-from scipy.ndimage import distance_transform_edt
-import time
-from scipy.sparse.linalg import eigsh
-import gzip
-
 warnings.filterwarnings("ignore")
 
 np.random.seed(0) # Seed for reproducibility
@@ -23,32 +16,27 @@ np.random.seed(0) # Seed for reproducibility
 Load the map
 """
 # Set the map
-map_name = 'simpleMap_augmented'
+map_name = 'simpleMap_05'
 # Load the map
 map_path = os.path.join(os.getcwd(), 'example_maps/', map_name + '.npy')
 map = np.load(map_path)
 # Check if the map is closed or open
 closed_map = True
-# if "closed" in map_name:
-#     closed_map = True
 # Extend the map with 1 cell to avoid index out of bounds
 padded_map = np.pad(map, 1, 'constant', constant_values=1)
 occ_map = utilities.get_occupied_polygon(padded_map)
 occ_map = occ_map - 1
 
-# fig = plt.figure(
-# Grid for the map
 x_min, x_max = 0, map.shape[0]
 y_min, y_max = 0, map.shape[1]
 grid_x, grid_y = np.meshgrid(np.arange(x_min, x_max), np.arange(y_min, y_max), indexing='ij')
 grid = np.vstack([grid_x.flatten(), grid_y.flatten()]).T
-
 """
 ===============================
 Parameters
 ===============================
 """
-param_file = os.path.dirname(os.path.realpath(__file__)) + '/params/' + 'hedac_params_map.json'
+param_file = os.path.dirname(os.path.realpath(__file__)) + '/params/' + 'hedac_params_map_05.json'
 
 with open(param_file, 'r') as f:
     param_data = json.load(f)
@@ -58,7 +46,7 @@ param = lambda: None
 for key, value in param_data.items():
     setattr(param, key, value)
 
-param.max_dtheta = np.pi / 34 # Maximum angular velocity (rad/s)
+param.max_dtheta = np.pi / param.max_dtheta # Maximum angular velocity (rad/s)
 param.nbResX = map.shape[0] # Number of cells in the x-direction
 param.nbResY = map.shape[1] # Number of cells in the y-direction
 
@@ -74,11 +62,10 @@ param.dt = min(
 )  # for the stability of implicit integration of Heat Equation
 
 agents = []
-x0_array = np.array([[120, 80],
-                [80, 80]])
+x0_array = np.array([[10.5, 25],
+                [12, 25]])
 
 for i in range(param.nbAgents):
-    # x0 = np.random.uniform(0, param.nbResX, 2)
     x0 = x0_array[i]
     theta0 = np.random.uniform(0, 2 * np.pi)
     agent = models.SecondOrderAgentWithHeading(x=x0,
@@ -155,8 +142,8 @@ subset = np.empty((0, 3))
 
 decay_array = np.exp(-param.decay *  np.arange(param.nbDataPoints))
 
-coverage_density_hist = np.memmap('coverage_density_hist.dat', dtype='int32', mode='w+', shape=(215, 2, param.nbDataPoints, param.nbAgents))
-coverage_density_prob_hist = np.memmap('coverage_density_prob_hist.dat', dtype='float32', mode='w+', shape=(215, param.nbDataPoints, param.nbAgents))
+coverage_density_hist = np.memmap('coverage_density_hist.dat', dtype='int32', mode='w+', shape=(15, 2, param.nbDataPoints, param.nbAgents))
+coverage_density_prob_hist = np.memmap('coverage_density_prob_hist.dat', dtype='float32', mode='w+', shape=(15, param.nbDataPoints, param.nbAgents))
 coverage_density_org = np.memmap('coverage_density_org.dat', dtype='float32', mode='w+', shape=goal_density.shape)
 decay_weights = np.memmap('decay_array.dat', dtype='float32', mode='w+', shape=(param.nbDataPoints,))
 decay_weights[:] = decay_array[::-1]
@@ -196,11 +183,10 @@ for agent in agents:
 
 # Create a matrix with ones on the diagonal
 adjacency_matrix = np.eye(param.nbAgents)
-
+obstacles = np.zeros((param.nbAgents, param.nbAgents))
 for t in range(param.nbDataPoints):
     print(f'\nStep: {t}/{param.nbDataPoints}')
-
-    if param.nbAgents > 1:
+    if param.nbAgents > 1 & t > 0:
         utilities.share_samples(agents, map, param.sens_range, adjacency_matrix)
 
     for agent in agents:
@@ -239,7 +225,7 @@ for t in range(param.nbDataPoints):
             # ============================= RAL Filter Mantovani2024
             if t > 0:
                 std_test = agent.std_pred_test[agent.samples[:, 0].astype(int), agent.samples[:, 1].astype(int)]
-                agent.samples = agent.samples[np.where(std_test > 0.95)[0]]
+                agent.samples = agent.samples[np.where(std_test > 0.75)[0]]
 
                 if len(agent.samples) != 0:
                     agent.pooled_dataset = np.unique(np.vstack((agent.pooled_dataset, utilities.max_pooling(agent.samples, 5))), axis=0, return_index=False)
@@ -275,14 +261,13 @@ for t in range(param.nbDataPoints):
                 y_start_kernel : y_start_kernel + num_kernel_dy,
             ]
 
-        agent.combo_density = utilities.normalize_mat(agent.combo_density)
-        diff = agent.combo_density - utilities.normalize_mat(coverage_density)
+        diff = utilities.normalize_mat(agent.combo_density) - utilities.normalize_mat(agent.coverage_density)
         source = np.maximum(diff, 0)**2 # Source term
 
-        source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
+        agent.source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
         agent.heat = utilities.update_heat(agent.heat,
-                                    source,
+                                    agent.source,
                                     map,
                                     param.dt,
                                     param.laplacian_kernel,
@@ -365,7 +350,7 @@ for i in range(param.nbAgents):
 # Heat
 ax[1].contourf(grid_x, grid_y, agents[0].heat, cmap='Blues', levels=10)
 ax[1].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-delta_quiver = 5
+delta_quiver = 2
 grad_x = gradient_x[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_x[::delta_quiver, ::delta_quiver])
 grad_y = gradient_y[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_y[::delta_quiver, ::delta_quiver])
 qx = np.arange(0, map.shape[0], delta_quiver)
@@ -374,6 +359,26 @@ q = ax[1].quiver(qx, qy, grad_x, grad_y, scale=1, scale_units='inches')
 plt.suptitle(f'Timestep: {t}')
 plt.tight_layout()
 # plt.pause(0.0001)
+plt.show()
+
+fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+# Plot the mean, std
+ax[0].cla()
+ax[1].cla()
+ax[0].set_aspect('equal')
+ax[1].set_aspect('equal')
+ax[0].contourf(grid_x, grid_y, agents[0].mu, cmap='Blues')
+ax[1].contourf(grid_x, grid_y, agents[0].std, cmap='Reds')
+plt.show()
+
+fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+# Plot the coverage density and the source
+ax[0].cla()
+ax[1].cla()
+ax[0].set_aspect('equal')
+ax[1].set_aspect('equal')
+ax[0].contourf(grid_x, grid_y, agents[0].coverage_density, cmap='Greens')
+ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges')
 plt.show()
 
 # fig = plt.figure(figsize=(15, 5))

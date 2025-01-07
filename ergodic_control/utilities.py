@@ -4,53 +4,76 @@ from sklearn.mixture import GaussianMixture
 from shapely.geometry import Point, Polygon
 from matplotlib.path import Path
 import warnings
-import time
 from skimage.measure import find_contours
-from skimage.morphology import binary_closing
 from shapely.geometry import Point, Polygon, MultiPolygon
 from shapely.vectorized import contains
-import matplotlib.pyplot as plt
-from sklearn.metrics.pairwise import pairwise_distances
 from scipy.spatial.distance import pdist, squareform, cdist
 from scipy.linalg import cholesky, solve_triangular
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 import sklearn.gaussian_process.kernels as kernels
-from scipy.signal import convolve2d
-from scipy.ndimage import convolve
-from numba import njit, jit, prange
+from numba import njit, prange
+from scipy.spatial import cKDTree
+from skimage.draw import line
 
-def update_heat(heat, source, local_cooling, map, param):
-    # Define the Laplacian kernel
+@njit(parallel=True, fastmath=True)
+def convolve_2d(image, kernel):
+    """
+    Apply a 2D convolution to an image with a given kernel.
+    Supports 'reflect' padding mode.
+    """
+    # Image dimensions
+    rows, cols = image.shape
+    k_rows, k_cols = kernel.shape
+    
+    # Define padding size based on kernel size
+    pad_height = k_rows // 2
+    pad_width = k_cols // 2
+    
+    # Initialize output image
+    output = np.zeros_like(image)
+    
+    # Loop through each pixel in the image (excluding the padding area)
+    for i in prange(rows):
+        for j in range(cols):
+            sum_value = 0.0
+            
+            # Apply kernel to the corresponding region in the image
+            for ki in range(k_rows):
+                for kj in range(k_cols):
+                    # Calculate the coordinates of the element in the padded image
+                    ni = i + ki - pad_height
+                    nj = j + kj - pad_width
+                    
+                    ni = max(0, min(ni, rows - 1))  # Reflect vertically
+                    nj = max(0, min(nj, cols - 1))  # Reflect horizontally
+                
+                    # Add to the sum
+                    sum_value += image[ni, nj] * kernel[ki, kj]
+            
+            # Store the result in the output image
+            output[i, j] = sum_value
+    
+    return output
 
-    # Convolve heat with the Laplacian kernel
-    # laplacian = convolve2d(heat, param.laplacian_kernel, mode='same', boundary='symm')
-    laplacian = convolve(heat, param.laplacian_kernel, mode='reflect')
+@njit(parallel=True)
+def update_heat(heat, source, map, dt, laplacian_kernel, alpha, source_strength, beta):
+    # Define the Laplacian kernel using convolve_2d
+    laplacian = convolve_2d(heat, laplacian_kernel)
 
     # Update heat equation
-    new_temperature = heat + param.dt * (
-                        param.alpha * laplacian + 
-                        param.source_strength * source -
-                        param.beta * heat
+    new_temperature = heat + dt * (
+                        alpha * laplacian
+                        + source_strength * source
+                        - beta * heat
                         )
-    new_temperature[map != 0] = heat[map != 0]  # Keep occupied cells unchanged
+
+    # Replace the values in new_temperature for the cells where map != 0
+    for i in prange(new_temperature.shape[0]):
+        for j in range(new_temperature.shape[1]):
+            if map[i, j] != 0:
+                new_temperature[i, j] = heat[i, j]  # Keep heat value for occupied cells
 
     return new_temperature
 
-# def update_heat(heat, source, local_cooling, map, param):
-#     # Compute the laplacian for all grid cells
-#     laplacian = (
-#         np.roll(heat, 1, axis=0)  # Shift up
-#         + np.roll(heat, -1, axis=0)  # Shift down
-#         + np.roll(heat, 1, axis=1)  # Shift left
-#         + np.roll(heat, -1, axis=1)  # Shift right
-#         - 4 * heat
-#     ) / param.dx**2
-
-#     new_temperature = heat + param.dt * (param.alpha * laplacian + param.source_strength * source)
-#     new_temperature[map != 0] = heat[map != 0]  # Keep occupied cells unchanged
-
-#     return new_temperature
 
 def gauss_pdf(points, mean, covariance):
   # Calculate the multivariate Gaussian probability
@@ -140,7 +163,6 @@ def colored_line(x, y, c, ax, **lc_kwargs):
     lc.set_array(c)  # set the colors of each segment
 
     return ax.add_collection(lc)
-
 
 def normalize_mat(mat):
     """
@@ -438,8 +460,6 @@ def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid)
 
     # Mask positions corresponding to obstacles
     obstacle_mask = occupancy_grid[next_x[valid_mask], next_y[valid_mask]] == 1
-    # obstacles = np.empty((0, 2))
-    # obstacles = np.vstack([obstacles, np.column_stack([next_x[valid_mask][obstacle_mask], next_y[valid_mask][obstacle_mask]])])
 
     # Compute distances for valid positions
     dx = dx[valid_mask]
@@ -489,7 +509,7 @@ def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid)
     if norm > 0:
         gradient /= norm
 
-    return gradient #, obstacles
+    return gradient
 
 def draw_fov(pos, theta, fov, fov_depth):
     """
@@ -799,7 +819,7 @@ def generate_gmm_on_map(map, free_cells, n_gaussians, n_particles, dim, random_s
     # Generate random covariances
     covariances = []
     for _ in range(n_gaussians):
-        cov = np.diag(np.random.uniform(20, 800, size=dim))  # Restrict covariance values
+        cov = np.diag(np.random.uniform(2, 80, size=dim))  # Restrict covariance values
         covariances.append(cov)
 
     # Generate samples
@@ -997,7 +1017,7 @@ def gp_predict(X_train: np.ndarray,
 
     return mu, std
 
-@njit(parallel=True)
+@njit(parallel=True, fastmath=True)
 def apply_decay(
     density_grid, 
     historical_points, 
@@ -1048,3 +1068,50 @@ def compute_combo(
     combo_density = np.where(map == 0, combo, 0) # Only keep the density on free cells
 
     return combo_density, mu, std, _std_cp
+
+# Optimized check_wall_between_agents function using Bresenham's line algorithm
+def check_wall_between_agents(agent1, agent2, map):
+    x1, y1 = agent1.x.astype(int)
+    x2, y2 = agent2.x.astype(int)
+    
+    # Get points along the line segment
+    rr, cc = line(x1, y1, x2, y2)
+    
+    # Check for walls
+    if np.any(map[rr, cc] == 1):  # Assuming 1 represents a wall
+        return True  # Wall found
+    return False  # No wall found
+
+# Optimized check_connectivity function
+def check_connectivity(agents, map, connectivity_r):
+    # Prepare a spatial index for fast neighbor lookup
+    positions = np.array([agent.x for agent in agents])
+    kdtree = cKDTree(positions)
+
+    # Clear neighbors and update based on new checks
+    for i, agent in enumerate(agents):
+        agent.neighbors = []  # Reset neighbors
+        
+        # Find all agents within connectivity radius
+        neighbor_indices = kdtree.query_ball_point(agent.x, connectivity_r)
+        for j in neighbor_indices:
+            if i != j and not check_wall_between_agents(agent, agents[j], map):
+                agent.neighbors.append(agents[j].id)
+
+# Optimized share_samples function
+def share_samples(agents, map, connectivity_r, adjacency_matrix):
+    # Update connectivity first
+    check_connectivity(agents, map, connectivity_r)
+    adjacency_matrix = np.eye(len(agents))  # Reset adjacency matrix
+
+    # Update adjacency based on connectivity
+    for agent in agents:
+        for neighbor_id in agent.neighbors:
+            adjacency_matrix[agent.id, neighbor_id] = 1
+
+    # Share samples based on connectivity
+    for agent in agents:
+        # Aggregate samples from neighbors
+        all_samples = np.vstack([agents[neighbor_id].subset for neighbor_id in agent.neighbors])
+        std_test = agent.std_pred_test[all_samples[:, 0].astype(int), all_samples[:, 1].astype(int)]
+        agent.subset = all_samples[np.where(std_test > 0.75)[0]]
