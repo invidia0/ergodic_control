@@ -54,26 +54,66 @@ def convolve_2d(image, kernel):
     
     return output
 
-@njit(parallel=True)
-def update_heat(heat, source, map, dt, laplacian_kernel, alpha, source_strength, beta):
-    # Define the Laplacian kernel using convolve_2d
-    laplacian = convolve_2d(heat, laplacian_kernel)
+def offset(mat, i, j):
+    """
+    offset a 2D matrix by i, j
+    """
+    rows, cols = mat.shape
+    rows = rows - 2
+    cols = cols - 2
+    return mat[1 + i : 1 + i + rows, 1 + j : 1 + j + cols]
+
+
+@njit(cache=True)
+def roll_optimized(arr, shift, axis):
+    """Efficient roll implementation using slicing."""
+    result = np.empty_like(arr)
+    if axis == 0:
+        shift = shift % arr.shape[0]
+        if shift > 0:
+            result[:shift] = arr[-shift:]
+            result[shift:] = arr[:-shift]
+        else:
+            result[:] = arr
+    elif axis == 1:
+        shift = shift % arr.shape[1]
+        if shift > 0:
+            result[:, :shift] = arr[:, -shift:]
+            result[:, shift:] = arr[:, :-shift]
+        else:
+            result[:] = arr
+    return result
+
+@njit(parallel=True, cache=True, fastmath=True)
+def update_heat_optimized(heat, source, map, dt, alpha, source_strength, beta, dx):
+    # Precompute dimensions
+    n, m = heat.shape
+
+    # Initialize output array
+    new_temperature = np.empty_like(heat)
+
+    # Compute Laplacian manually
+    laplacian = (
+        roll_optimized(heat, 1, axis=0) +
+        roll_optimized(heat, -1, axis=0) +
+        roll_optimized(heat, 1, axis=1) +
+        roll_optimized(heat, -1, axis=1) -
+        4 * heat
+    ) / dx**2
 
     # Update heat equation
-    new_temperature = heat + dt * (
-                        alpha * laplacian
-                        + source_strength * source
-                        - beta * heat
-                        )
-
-    # Replace the values in new_temperature for the cells where map != 0
-    for i in prange(new_temperature.shape[0]):
-        for j in range(new_temperature.shape[1]):
-            if map[i, j] != 0:
-                new_temperature[i, j] = heat[i, j]  # Keep heat value for occupied cells
+    for i in prange(n):
+        for j in range(m):
+            if map[i, j] == 0:  # Update only for non-occupied cells
+                new_temperature[i, j] = heat[i, j] + dt * (
+                    alpha * laplacian[i, j] +
+                    source_strength * source[i, j] -
+                    beta * heat[i, j]
+                )
+            else:
+                new_temperature[i, j] = heat[i, j]  # Keep original value for occupied cells
 
     return new_temperature
-
 
 def gauss_pdf(points, mean, covariance):
   # Calculate the multivariate Gaussian probability
@@ -352,15 +392,6 @@ def agent_block(nbVarX, min_val, agent_radius):
     print(f"Minimum element of the block: {np.min(block)}" +
           " values smaller than this assumed as zero")
     return block
-
-def offset(mat, i, j):
-    """
-    offset a 2D matrix by i, j
-    """
-    rows, cols = mat.shape
-    rows = rows - 2
-    cols = cols - 2
-    return mat[1 + i : 1 + i + rows, 1 + j : 1 + j + cols]
 
 def clamp_kernel_1d(x, low_lim, high_lim, kernel_size):
     """
@@ -671,6 +702,9 @@ def fov_coverage_block(points, fov_array, fov_depth):
     fov_array: np.array, points describing the arc of the FOV boundary.
     fov_depth: float, the maximum depth of the FOV.
     """
+    if len(points) == 0:
+        return np.array([])
+
     # Find the center of the FOV
     fov_center = np.mean(fov_array, axis=0)
 
@@ -819,7 +853,7 @@ def generate_gmm_on_map(map, free_cells, n_gaussians, n_particles, dim, random_s
     # Generate random covariances
     covariances = []
     for _ in range(n_gaussians):
-        cov = np.diag(np.random.uniform(2, 80, size=dim))  # Restrict covariance values
+        cov = np.diag(np.random.uniform(10, 30, size=dim))  # Restrict covariance values
         covariances.append(cov)
 
     # Generate samples
@@ -889,38 +923,6 @@ def max_pooling(data, downsampling_factor, divisor_range=(2, 5)):
             pooled_data.append(chunk[max_idx])
 
     return np.array(pooled_data)
-
-
-# def rbf_white_kernel(X1: np.ndarray, 
-#                      X2: np.ndarray,
-#                      lengthscale: float=1.0,
-#                      sigma_f: float=1.0,
-#                      sigma_n: float=1e-8) -> np.ndarray:
-#     """
-#     Exponentiated Quadratic Kernel with optimizations for large matrices.
-    
-#     Args:
-#         X1: Array of m points (m x d).
-#         X2: Array of n points (n x d).
-
-#     Returns:
-#         (m x n) matrix.
-#     """
-#     # Precompute squared norms
-#     X1_sqnorm = np.sum(X1**2, axis=1)[:, np.newaxis]  # m x 1
-#     X2_sqnorm = np.sum(X2**2, axis=1)  # n
-
-#     # Efficient computation of pairwise squared Euclidean distance
-#     sqdist = X1_sqnorm + X2_sqnorm - 2 * np.dot(X1, X2.T)
-
-#     # Apply kernel function (Exponentiated Quadratic)
-#     SQE = np.exp(-0.5 * sqdist / lengthscale**2)
-
-#     # Factor out the constant for the kernel
-#     C = sigma_f**2
-
-#     # Return the kernel matrix with the scaling factor
-#     return C * SQE  # + np.eye(X1.shape[0]) * sigma_n**2 (optional regularization)
 
 def rbf_white_kernel(X1: np.ndarray, 
                      X2: np.ndarray = None,
@@ -1017,14 +1019,47 @@ def gp_predict(X_train: np.ndarray,
 
     return mu, std
 
-@njit(parallel=True, fastmath=True)
+# @njit(parallel=True, fastmath=True, cache=True)
+# def apply_decay(
+#     density_grid, 
+#     historical_points, 
+#     historical_probs, 
+#     current_time, 
+#     chunk_size, 
+#     decay_factors
+# ):
+#     total_time_steps = current_time + 1  # Include up to the current time step
+
+#     # Process the time dimension in chunks
+#     for chunk_start in range(0, total_time_steps, chunk_size):
+#         chunk_end = min(chunk_start + chunk_size, total_time_steps)
+
+#         # Precompute decay factors and probability values for this chunk
+#         decay_factors_chunk = decay_factors[chunk_start:chunk_end]
+        
+#         # Parallelize over historical points
+#         for point_index in prange(historical_points.shape[0]):
+#             # Extract historical points and probabilities for the current point
+#             point_history = historical_points[point_index]
+#             prob_history = historical_probs[point_index]
+
+#             for time_index in prange(chunk_start, chunk_end):
+#                 # Precompute coordinates and values
+#                 x_coord = point_history[0, time_index]
+#                 y_coord = point_history[1, time_index]
+#                 decay_factor = decay_factors_chunk[time_index - chunk_start]
+#                 prob_value = prob_history[time_index]
+
+#                 density_grid[x_coord, y_coord] += decay_factor * prob_value
+
+@njit(fastmath=True, cache=True)
 def apply_decay(
     density_grid, 
     historical_points, 
     historical_probs, 
     current_time, 
     chunk_size, 
-    decay_factors
+    param_decay
 ):
     total_time_steps = current_time + 1  # Include up to the current time step
 
@@ -1032,22 +1067,22 @@ def apply_decay(
     for chunk_start in range(0, total_time_steps, chunk_size):
         chunk_end = min(chunk_start + chunk_size, total_time_steps)
 
-        # Precompute decay factors and probability values for this chunk
-        decay_factors_chunk = decay_factors[chunk_start:chunk_end]
-        
         # Parallelize over historical points
-        for point_index in prange(historical_points.shape[0]):
+        for point_index in range(historical_points.shape[0]):
             # Extract historical points and probabilities for the current point
             point_history = historical_points[point_index]
             prob_history = historical_probs[point_index]
 
-            for time_index in prange(chunk_start, chunk_end):
-                # Precompute coordinates and values
+            for time_index in range(chunk_start, chunk_end):
+                # Precompute decay factor at this time index
+                decay_factor = np.exp(-param_decay * (current_time - time_index))  # Dynamic decay factor based on the current time step
+
+                # Extract coordinates and probability for this time step
                 x_coord = point_history[0, time_index]
                 y_coord = point_history[1, time_index]
-                decay_factor = decay_factors_chunk[time_index - chunk_start]
                 prob_value = prob_history[time_index]
 
+                # Apply decay to the density grid
                 density_grid[x_coord, y_coord] += decay_factor * prob_value
 
 def compute_combo(
@@ -1063,8 +1098,8 @@ def compute_combo(
 
     _std_cp = np.copy(std)
 
-    # combo = np.exp(mu) + np.exp(std)
-    combo = 10**mu + 10**std
+    combo = (np.exp(mu)-1) + (np.exp(std) - 1)
+    # combo = 10**mu + 10**std
     combo_density = np.where(map == 0, combo, 0) # Only keep the density on free cells
 
     return combo_density, mu, std, _std_cp
@@ -1084,34 +1119,25 @@ def check_wall_between_agents(agent1, agent2, map):
 
 # Optimized check_connectivity function
 def check_connectivity(agents, map, connectivity_r):
-    # Prepare a spatial index for fast neighbor lookup
     positions = np.array([agent.x for agent in agents])
     kdtree = cKDTree(positions)
 
-    # Clear neighbors and update based on new checks
     for i, agent in enumerate(agents):
-        agent.neighbors = []  # Reset neighbors
-        
-        # Find all agents within connectivity radius
-        neighbor_indices = kdtree.query_ball_point(agent.x, connectivity_r)
-        for j in neighbor_indices:
-            if i != j and not check_wall_between_agents(agent, agents[j], map):
-                agent.neighbors.append(agents[j].id)
+        neighbors = kdtree.query_ball_point(agent.x, connectivity_r)
+        agent.neighbors = [
+            agents[j].id for j in neighbors
+            if i != j and not check_wall_between_agents(agent, agents[j], map)
+        ]
 
 # Optimized share_samples function
 def share_samples(agents, map, connectivity_r, adjacency_matrix):
-    # Update connectivity first
     check_connectivity(agents, map, connectivity_r)
-    adjacency_matrix = np.eye(len(agents))  # Reset adjacency matrix
+    adjacency_matrix = np.eye(len(agents))
 
-    # Update adjacency based on connectivity
     for agent in agents:
         for neighbor_id in agent.neighbors:
             adjacency_matrix[agent.id, neighbor_id] = 1
 
-    # Share samples based on connectivity
-    for agent in agents:
-        # Aggregate samples from neighbors
-        all_samples = np.vstack([agents[neighbor_id].subset for neighbor_id in agent.neighbors])
-        std_test = agent.std_pred_test[all_samples[:, 0].astype(int), all_samples[:, 1].astype(int)]
-        agent.subset = all_samples[np.where(std_test > 0.75)[0]]
+        if agent.neighbors:
+            all_samples = np.vstack([agents[neighbor_id].subset for neighbor_id in agent.neighbors])
+            agent.samples = np.unique(np.vstack([agent.samples, all_samples]), axis=0)
