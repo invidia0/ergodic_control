@@ -98,7 +98,7 @@ class SecondOrderAgentWithHeading:
         self.max_dtheta = max_dtheta
 
         self.id = id
-        self.x_hist = np.empty((0, len(x)))
+        self.x_hist = np.empty((0, 3)) # X, Y, Theta
 
     def update(self, gradient):
         """
@@ -131,7 +131,7 @@ class SecondOrderAgentWithHeading:
 
         # Update position
         self.x = self.x + velocity * self.dt
-        self.x_hist = np.vstack((self.x_hist, self.x))
+        self.x_hist = np.vstack((self.x_hist, np.array([self.x[0], self.x[1], self.theta])))
 
     def get_state(self):
         """

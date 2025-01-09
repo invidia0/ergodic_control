@@ -102,6 +102,12 @@ param.area = np.sum(map == 0) * cell_area
 goal_density = np.zeros_like(map)
 goal_density[map == 0] = norm_density_map
 
+# fig = plt.figure(figsize=(12, 5))
+# ax = fig.add_subplot(111)
+# ax.set_aspect('equal')
+# ax.contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
+# plt.show()
+
 """
 ===============================
 Initialize heat equation related parameters
@@ -164,6 +170,10 @@ Debug & animation
 """
 grad = 0
 _heat_hist = []
+_mu_hist = []
+_std_hist = []
+_source_hist = []
+_coverage_hist = []
 
 """
 ===============================
@@ -176,8 +186,6 @@ for agent in agents:
     agent.samples = np.empty((0, 3))
     agent.pooled_dataset = np.empty((0, 3))
     agent.subset = np.empty((0, 3))
-    # Stack 100 of the preSamples
-    # agent.pooled_dataset = np.vstack((agent.pooled_dataset, preSamples[:300]))
     agent.neighbors = []
 
 # Create a matrix with ones on the diagonal
@@ -197,6 +205,7 @@ for chunk in range(num_chunks):
         print(f'\nStep: {t}/{param.nbDataPoints}')
         if param.nbAgents > 1 & t > 0:
             utilities.share_samples(agents, map, param.sens_range, adjacency_matrix)
+
         for agent in agents:
             if param.use_fov:                
                 """ Field of View (FOV) """
@@ -272,14 +281,8 @@ for chunk in range(num_chunks):
                 ]
 
             diff = utilities.normalize_mat(agent.combo_density) - utilities.normalize_mat(agent.coverage_density)
-            # source = np.maximum(diff, 0)**2 # Source term
-            # diff = utilities.min_max_normalize(agent.combo_density) - utilities.min_max_normalize(agent.coverage_density)
-            # L2 norm
             ergodic_metric[t, agent.id] = np.linalg.norm(diff)
-            # source = np.maximum(diff, 0) # RElu function
-            # source = np.exp(diff)
-            source = np.maximum(diff, 0)**2 # RElu function
-            # source = np.exp(source) - 1
+            source = np.maximum(diff, 0)**2 # relu
 
             agent.source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
@@ -287,7 +290,6 @@ for chunk in range(num_chunks):
                                         agent.source,
                                         map,
                                         param.dt,
-                                        # param.laplacian_kernel,
                                         param.alpha,
                                         param.source_strength,
                                         param.beta,
@@ -302,12 +304,30 @@ for chunk in range(num_chunks):
             agent.last_heading = agent.theta
             agent.last_position = agent.x
             # Update the agent
-            grad = utilities.calculate_gradient_map(
+            agent.grad = utilities.calculate_gradient_map(
                 param, agent, gradient_x, gradient_y, map
             )
-            agent.update(grad)
-
+            agent.update(agent.grad)
+            
+            # Debug
             _heat_hist.append(agent.heat)
+            _mu_hist.append(agent.mu)
+            _std_hist.append(agent.std)
+            _source_hist.append(agent.source)
+            _coverage_hist.append(agent.coverage_density)
+
+if param.save_data:
+    files = [_heat_hist, _mu_hist, _std_hist, _source_hist, _coverage_hist, agents[0].x_hist, goal_density]
+    filenames = ['heat_hist', 'mu_hist', 'std_hist', 'source_hist', 'coverage_hist', 'x_hist', 'goal_density']
+    datapath = os.path.join(os.getcwd(), '_datastorage/')
+
+    if not os.path.exists(datapath):
+        os.makedirs(datapath)
+        
+    for i, file in enumerate(files):
+        file = np.array(file)
+        np.save(datapath + filenames[i], file)
+
 
 plt.close("all")
 fig, ax = plt.subplots(1, 2, figsize=(12, 5))
@@ -350,6 +370,7 @@ if param.use_fov:
         ax[0].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
         ax[0].scatter(agent.x_hist[0, 0], agent.x_hist[0, 1], s=100, facecolors='none', edgecolors='green', lw=2)
         ax[0].scatter(agent.x[0], agent.x[1], c='k', s=100, marker='o', zorder=10)
+        ax[0].quiver(agent.x[0], agent.x[1], agent.grad[0], agent.grad[1], scale = None, scale_units='inches', color='red')
         # Plot the kernel block
         block_min = agent.x - param.kernel_size // 2
         block_max = agent.x + param.kernel_size // 2
@@ -373,7 +394,7 @@ delta_quiver = 2
 grad_x = gradient_x[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_x[::delta_quiver, ::delta_quiver])
 grad_y = gradient_y[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_y[::delta_quiver, ::delta_quiver])
 qx = np.arange(0, map.shape[0], delta_quiver)
-qy = np.arange(0, map.shape[1], delta_quiver)        
+qy = np.arange(0, map.shape[1], delta_quiver)
 q = ax[1].quiver(qx, qy, grad_x, grad_y, scale=1, scale_units='inches')
 plt.suptitle(f'Timestep: {t}')
 plt.tight_layout()

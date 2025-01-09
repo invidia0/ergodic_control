@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from numba import jit
+from ergodic_control import utilities
 
 # JIT-optimized functions (no changes here, still using `compute_midpoints_and_segments`)
 @jit(nopython=True)
@@ -29,84 +30,71 @@ def compute_midpoints_and_segments(x, y):
         
     return segments
 
-# Load data
+# Preload and cache data
 map_name = 'simpleMap_05'
 map_path = os.path.join(os.getcwd(), 'example_maps/', map_name + '.npy')
 datapath = os.path.join(os.getcwd(), '_datastorage/')
 
 map_data = np.load(map_path)
-heat_hist = np.load(datapath + '_heat_hist.npy')
-x_hist = np.load(datapath + 'agents_x_hist.npy')
+heat_hist = np.load(datapath + 'heat_hist.npy')
+x_hist = np.load(datapath + 'x_hist.npy')
 goal_density = np.load(datapath + 'goal_density.npy')
+coverage_hist = np.load(datapath + 'coverage_hist.npy')
+mu_hist = np.load(datapath + 'mu_hist.npy')
+std_hist = np.load(datapath + 'std_hist.npy')
 
-# Setup
 nbDataPoints = heat_hist.shape[0]
 time_array = np.linspace(0, nbDataPoints, nbDataPoints)
 grid_x, grid_y = np.meshgrid(np.arange(goal_density.shape[0]), 
-                            np.arange(goal_density.shape[1]), 
-                            indexing='ij')
+                              np.arange(goal_density.shape[1]), indexing='ij')
+
+combo_hist = np.exp(mu_hist) + np.exp(std_hist) - 2
+source_hist = np.maximum(utilities.normalize_mat(combo_hist) - utilities.normalize_mat(coverage_hist), 0)**2
+ergodic_hist = np.linalg.norm(combo_hist - coverage_hist, ord=2, axis=(1, 2))
+
+padded_map = np.pad(map_data, 1, 'constant', constant_values=1)
+occ_map = utilities.get_occupied_polygon(padded_map) - 1
+
+fov_depth = 5
+fov_span = 90
+fov_list = [utilities.clip_polygon_no_convex(x_hist[t, :2], 
+                                              utilities.draw_fov_arc(x_hist[t, :2], x_hist[t, 2], fov_span, fov_depth, 10), 
+                                              occ_map, True) for t in range(nbDataPoints)]
+
+# Manage the first step where t == 0
+segments_list = [compute_midpoints_and_segments(x_hist[:t, 0], x_hist[:t, 1]) for t in range(1, nbDataPoints)]
 
 # Initialize figure
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-for ax in (ax1, ax2):
-    ax.set_aspect('equal')
-    ax.set_xticks([])
-    ax.set_yticks([])
-
-contour_goal = ax1.contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
-
-# Initialize scatter points
-scatter_start = ax1.scatter(x_hist[0, 0], x_hist[0, 1], s=100, facecolors='none', 
-                          edgecolors='green', lw=2)
-scatter_current = ax1.scatter([], [], s=100, c='black', marker='o')
-
-# Initialize static elements
-map_plot1 = ax1.pcolormesh(grid_x, grid_y, np.where(map_data == 0, np.nan, map_data), 
-                          cmap='gray')  # This shows the map with walls in gray
-map_plot2 = ax2.pcolormesh(grid_x, grid_y, np.where(map_data == 0, np.nan, map_data), 
-                          cmap='gray')  # Same here
-ax2.set_title('Heatmap')
-ax1.set_title('Agent path')
-
-# Store global variables
-heat_contour = None
+contour_goal = ax1.contourf(grid_x, grid_y, goal_density, cmap='Reds', levels=10)
+scatter_current = ax1.scatter([], [], s=100, c='black', marker='o', zorder=9)
+fov_fill = ax1.fill([], [], color='tab:blue', alpha=0.5)
+map_plot1 = ax1.pcolormesh(grid_x, grid_y, np.where(map_data == 0, np.nan, map_data), cmap='gray', zorder=10)
+map_plot2 = ax2.pcolormesh(grid_x, grid_y, np.where(map_data == 0, np.nan, map_data), cmap='gray', zorder=10)
+source_contour = None
 current_line = None
 
 def update(frame):
-    global heat_contour, current_line
-    
-    # Remove previous line collection
+    global source_contour, current_line
+
     if current_line is not None:
         current_line.remove()
-    
-    # Create new colored line
-    if frame > 0:
-        segments = compute_midpoints_and_segments(x_hist[:frame, 0], x_hist[:frame, 1])
-        current_line = LineCollection(segments, cmap='Blues', capstyle='butt', linewidth=2)
-        current_line.set_array(time_array[:frame-1])
-        ax1.add_collection(current_line)
-    
-    # Update heat contour
-    if heat_contour is not None:
-        for coll in heat_contour.collections:
-            coll.remove()
-    heat_contour = ax2.contourf(grid_x, grid_y, heat_hist[frame], 
-                               cmap='Blues', levels=10)
-    
-    
-    # Update current position
+    current_line = LineCollection(segments_list[frame], cmap='viridis', linewidth=2, zorder=1)
+    current_line.set_array(time_array[:frame])
+    ax1.add_collection(current_line)
+
     scatter_current.set_offsets([x_hist[frame, 0], x_hist[frame, 1]])
 
+    if source_contour is not None:
+        for coll in source_contour.collections:
+            coll.remove()
+    source_contour = ax2.contourf(grid_x, grid_y, source_hist[frame], cmap='Blues', levels=10)
+
+    fov_fill[0].set_xy(fov_list[frame])
     fig.suptitle(f"Frame: {frame}/{nbDataPoints}", fontsize=16)
+    print(f"Frame: {frame}/{nbDataPoints}")
+    return scatter_current, source_contour, current_line
 
-    print(f'\rFrame: {frame}/{nbDataPoints}', end='', flush=True)
-    
-    # Return only scatter and heat contour (no quiver here)
-    return scatter_current, heat_contour, current_line
-
-# Create and save animation
-anim = FuncAnimation(fig, update, frames=range(0, nbDataPoints, 10), blit=False)
-fig.tight_layout()
-# store the animation in order to save it with different fps
-anim.save('ergodic_control_map_05.mp4', writer='ffmpeg', fps=29)
+anim = FuncAnimation(fig, update, frames=range(0, nbDataPoints, 10), blit=False, interval=30)
+anim.save('ergodic_control_animation.mp4', writer='ffmpeg')
 plt.close()

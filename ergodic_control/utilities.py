@@ -629,8 +629,6 @@ def init_fov(fov_deg, fov_depth):
     This function returns a list of points that make up the field of view.
     
     Parameters:
-    pos: list or array-like, position of the agent [x, y] or an arbitrary initial position.
-    theta: float, heading angle of the agent in radians
     fov: float, field of view in degrees (e.g., 90)
     fov_depth: float, depth of the field of view
     
@@ -853,7 +851,7 @@ def generate_gmm_on_map(map, free_cells, n_gaussians, n_particles, dim, random_s
     # Generate random covariances
     covariances = []
     for _ in range(n_gaussians):
-        cov = np.diag(np.random.uniform(10, 30, size=dim))  # Restrict covariance values
+        cov = np.diag(np.random.uniform(5, 20, size=dim))  # Restrict covariance values
         covariances.append(cov)
 
     # Generate samples
