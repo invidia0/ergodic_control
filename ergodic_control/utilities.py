@@ -85,7 +85,7 @@ def roll_optimized(arr, shift, axis):
     return result
 
 @njit(parallel=True, cache=True, fastmath=True)
-def update_heat_optimized(heat, source, map, dt, alpha, source_strength, beta, dx):
+def update_heat_optimized(heat, source, map, local_cooling_matrix, dt, alpha, source_strength, beta, local_cooling, dx):
     # Precompute dimensions
     n, m = heat.shape
 
@@ -108,7 +108,8 @@ def update_heat_optimized(heat, source, map, dt, alpha, source_strength, beta, d
                 new_temperature[i, j] = heat[i, j] + dt * (
                     alpha * laplacian[i, j] +
                     source_strength * source[i, j] -
-                    beta * heat[i, j]
+                    beta * heat[i, j] -
+                    local_cooling * local_cooling_matrix[i, j]
                 )
             else:
                 new_temperature[i, j] = heat[i, j]  # Keep original value for occupied cells
@@ -1017,39 +1018,6 @@ def gp_predict(X_train: np.ndarray,
 
     return mu, std
 
-# @njit(parallel=True, fastmath=True, cache=True)
-# def apply_decay(
-#     density_grid, 
-#     historical_points, 
-#     historical_probs, 
-#     current_time, 
-#     chunk_size, 
-#     decay_factors
-# ):
-#     total_time_steps = current_time + 1  # Include up to the current time step
-
-#     # Process the time dimension in chunks
-#     for chunk_start in range(0, total_time_steps, chunk_size):
-#         chunk_end = min(chunk_start + chunk_size, total_time_steps)
-
-#         # Precompute decay factors and probability values for this chunk
-#         decay_factors_chunk = decay_factors[chunk_start:chunk_end]
-        
-#         # Parallelize over historical points
-#         for point_index in prange(historical_points.shape[0]):
-#             # Extract historical points and probabilities for the current point
-#             point_history = historical_points[point_index]
-#             prob_history = historical_probs[point_index]
-
-#             for time_index in prange(chunk_start, chunk_end):
-#                 # Precompute coordinates and values
-#                 x_coord = point_history[0, time_index]
-#                 y_coord = point_history[1, time_index]
-#                 decay_factor = decay_factors_chunk[time_index - chunk_start]
-#                 prob_value = prob_history[time_index]
-
-#                 density_grid[x_coord, y_coord] += decay_factor * prob_value
-
 @njit(fastmath=True, cache=True)
 def apply_decay(
     density_grid, 
@@ -1102,7 +1070,6 @@ def compute_combo(
 
     return combo_density, mu, std, _std_cp
 
-# Optimized check_wall_between_agents function using Bresenham's line algorithm
 def check_wall_between_agents(agent1, agent2, map):
     x1, y1 = agent1.x.astype(int)
     x2, y2 = agent2.x.astype(int)
@@ -1115,19 +1082,23 @@ def check_wall_between_agents(agent1, agent2, map):
         return True  # Wall found
     return False  # No wall found
 
-# Optimized check_connectivity function
 def check_connectivity(agents, map, connectivity_r):
     positions = np.array([agent.x for agent in agents])
     kdtree = cKDTree(positions)
 
     for i, agent in enumerate(agents):
+        agent.last_neighbors = agent.neighbors
         neighbors = kdtree.query_ball_point(agent.x, connectivity_r)
         agent.neighbors = [
             agents[j].id for j in neighbors
             if i != j and not check_wall_between_agents(agent, agents[j], map)
         ]
+        # Remove agents from last_neighbors that are still in neighbors
+        agent.last_neighbors = [
+            neighbor for neighbor in agent.last_neighbors
+            if neighbor not in agent.neighbors
+        ]
 
-# Optimized share_samples function
 def share_samples(agents, map, connectivity_r, adjacency_matrix):
     check_connectivity(agents, map, connectivity_r)
     adjacency_matrix = np.eye(len(agents))
@@ -1138,4 +1109,6 @@ def share_samples(agents, map, connectivity_r, adjacency_matrix):
 
         if agent.neighbors:
             all_samples = np.vstack([agents[neighbor_id].subset for neighbor_id in agent.neighbors])
-            agent.samples = np.unique(np.vstack([agent.samples, all_samples]), axis=0)
+            agent.subset = np.unique(np.vstack([agent.subset, all_samples]), axis=0)
+
+    return adjacency_matrix
