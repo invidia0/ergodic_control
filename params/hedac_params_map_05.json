@@ -5,7 +5,7 @@
     "dx": 0.5,
     "eps": 0.1,
     "xlim": [0, 1],
-    "nbDataPoints": 15000,
+    "nbDataPoints": 5000,
     "nbGaussian": 1,
     "nbParticles": 100,
     "nbVar": 2,

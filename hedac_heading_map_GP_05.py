@@ -179,12 +179,29 @@ ergodic_metric = np.zeros((param.nbDataPoints, param.nbAgents))
 Debug & animation
 """
 grad = 0
-_heat_hist = np.empty((goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
-_mu_hist = np.empty_like(_heat_hist)
-_std_hist = np.empty_like(_heat_hist)
-_source_hist = np.empty_like(_heat_hist)
-_coverage_hist = np.empty_like(_heat_hist)
-_path_hist = np.empty((2, param.nbDataPoints, param.nbAgents))
+# _heat_hist = np.empty((goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
+# _mu_hist = np.empty_like(_heat_hist)
+# _std_hist = np.empty_like(_heat_hist)
+# _source_hist = np.empty_like(_heat_hist)
+# _coverage_hist = np.empty_like(_heat_hist)
+# _path_hist = np.empty((2, param.nbDataPoints, param.nbAgents))
+# _theta_hist = np.empty((param.nbDataPoints, param.nbAgents))
+data_storage_path = os.path.join(os.getcwd(), '_datastorage/')
+_goal_density = np.memmap(data_storage_path + "goal_density.dat", dtype=np.float64, mode='w+', shape=(map.shape[0], map.shape[1]))
+_goal_density[:, :] = goal_density[:, :]
+_goal_density.flush()
+_heat_hist = np.memmap(data_storage_path + "heat_hist.dat", dtype=np.float64, mode='w+', 
+                       shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
+_mu_hist = np.memmap(data_storage_path + "mu_hist.dat", dtype=np.float64, mode='w+', 
+                      shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
+_std_hist = np.memmap(data_storage_path + "std_hist.dat", dtype=np.float64, mode='w+', 
+                       shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
+_source_hist = np.memmap(data_storage_path + "source_hist.dat", dtype=np.float64, mode='w+', 
+                          shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
+_coverage_hist = np.memmap(data_storage_path + "coverage_hist.dat", dtype=np.float64, mode='w+', 
+                            shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
+_path_hist = np.memmap(data_storage_path + "path_hist.dat", dtype=np.float64, mode='w+', 
+                        shape=(3, param.nbDataPoints, param.nbAgents))
 
 """
 ===============================
@@ -402,148 +419,156 @@ for chunk in range(num_chunks):
             _std_hist[:, :, t, idx] = agent.std
             _source_hist[:, :, t, idx] = agent.source
             _coverage_hist[:, :, t, idx] = agent.coverage_density
-            _path_hist[:, t, idx] = agent.x
+            _path_hist[:, t, idx] = np.array((agent.x[0], agent.x[1], agent.theta))
 
-if param.save_data:
-    files = [_heat_hist, _mu_hist, _std_hist, _source_hist, _coverage_hist, _path_hist, goal_density]
-    filenames = ['heat_hist', 'mu_hist', 'std_hist', 'source_hist', 'coverage_hist', 'path_hist', 'goal_density']
-    datapath = os.path.join(os.getcwd(), '_datastorage/')
+# Flush changes to disk after writing
+_heat_hist.flush()
+_mu_hist.flush()
+_std_hist.flush()
+_source_hist.flush()
+_coverage_hist.flush()
+_path_hist.flush()
 
-    if not os.path.exists(datapath):
-        os.makedirs(datapath)
+# if param.save_data:
+#     files = [_heat_hist, _mu_hist, _std_hist, _source_hist, _coverage_hist, _path_hist, goal_density]
+#     filenames = ['heat_hist', 'mu_hist', 'std_hist', 'source_hist', 'coverage_hist', 'path_hist', 'goal_density']
+#     datapath = os.path.join(os.getcwd(), '_datastorage/')
+
+#     if not os.path.exists(datapath):
+#         os.makedirs(datapath)
         
-    for i, file in enumerate(files):
-        file = np.array(file)
-        np.save(datapath + filenames[i], file)
+#     for i, file in enumerate(files):
+#         file = np.array(file)
+#         np.save(datapath + filenames[i], file)
 
 
-plt.close("all")
-fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-time_array = np.linspace(0, param.nbDataPoints, param.nbDataPoints)
-# Plot the agents
-ax[0].cla()
-ax[1].cla()
+# plt.close("all")
+# fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+# time_array = np.linspace(0, param.nbDataPoints, param.nbDataPoints)
+# # Plot the agents
+# ax[0].cla()
+# ax[1].cla()
 
-ax[0].set_aspect('equal')
-ax[1].set_aspect('equal')
+# ax[0].set_aspect('equal')
+# ax[1].set_aspect('equal')
 
-ax[0].contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
-ax[0].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+# ax[0].contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
+# ax[0].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
 
-collisions = []
-for i in range(len(agents)):
-    for j in range(i + 1, len(agents)):
-            if np.any(np.all(np.linalg.norm(agents[i].x_hist - agents[j].x_hist, axis=1) < 0.5, axis=0)):
-                collisions.append((i, j))
+# collisions = []
+# for i in range(len(agents)):
+#     for j in range(i + 1, len(agents)):
+#             if np.any(np.all(np.linalg.norm(agents[i].x_hist - agents[j].x_hist, axis=1) < 0.5, axis=0)):
+#                 collisions.append((i, j))
 
-# Plot the collisions
-for i, j in collisions:
-    ax[0].plot(agents[i].x_hist[:, 0], agents[i].x_hist[:, 1], color='red', alpha=0.5)
-    ax[0].plot(agents[j].x_hist[:, 0], agents[j].x_hist[:, 1], color='blue', alpha=0.5)
+# # Plot the collisions
+# for i, j in collisions:
+#     ax[0].plot(agents[i].x_hist[:, 0], agents[i].x_hist[:, 1], color='red', alpha=0.5)
+#     ax[0].plot(agents[j].x_hist[:, 0], agents[j].x_hist[:, 1], color='blue', alpha=0.5)
 
-cmaps = ['Blues', 'Reds', 'Purples', 'Greens', 'Oranges']
-for agent in agents:
-    lines = utilities.colored_line(agent.x_hist[:, 0],
-                                    agent.x_hist[:, 1],
-                                    time_array,
-                                    ax[0],
-                                    cmap=cmaps[agent.id],
-                                    linewidth=2)
-# FOV
-if param.use_fov:
-    for agent in agents:
-        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map)
-        ax[0].fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color='blue', alpha=0.3)
-        # Heading
-        ax[0].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
-        ax[0].scatter(agent.x_hist[0, 0], agent.x_hist[0, 1], s=100, facecolors='none', edgecolors='green', lw=2)
-        ax[0].scatter(agent.x[0], agent.x[1], c='k', s=100, marker='o', zorder=10)
-        ax[0].quiver(agent.x[0], agent.x[1], agent.grad[0], agent.grad[1], scale = None, scale_units='inches', color='red')
-        # Plot the kernel block
-        block_min = agent.x - param.kernel_size // 2
-        block_max = agent.x + param.kernel_size // 2
-        ax[0].add_patch(plt.Rectangle(block_min, block_max[0] - block_min[0], block_max[1] - block_min[1], fill=None, edgecolor='green', lw=2))
-        ax[1].scatter(agent.x[0], agent.x[1], c='black', s=100, marker='o')
-        # Plot the heading
-        ax[1].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
+# cmaps = ['Blues', 'Reds', 'Purples', 'Greens', 'Oranges']
+# for agent in agents:
+#     lines = utilities.colored_line(agent.x_hist[:, 0],
+#                                     agent.x_hist[:, 1],
+#                                     time_array,
+#                                     ax[0],
+#                                     cmap=cmaps[agent.id],
+#                                     linewidth=2)
+# # FOV
+# if param.use_fov:
+#     for agent in agents:
+#         fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map)
+#         ax[0].fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color='blue', alpha=0.3)
+#         # Heading
+#         ax[0].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
+#         ax[0].scatter(agent.x_hist[0, 0], agent.x_hist[0, 1], s=100, facecolors='none', edgecolors='green', lw=2)
+#         ax[0].scatter(agent.x[0], agent.x[1], c='k', s=100, marker='o', zorder=10)
+#         ax[0].quiver(agent.x[0], agent.x[1], agent.grad[0], agent.grad[1], scale = None, scale_units='inches', color='red')
+#         # Plot the kernel block
+#         block_min = agent.x - param.kernel_size // 2
+#         block_max = agent.x + param.kernel_size // 2
+#         ax[0].add_patch(plt.Rectangle(block_min, block_max[0] - block_min[0], block_max[1] - block_min[1], fill=None, edgecolor='green', lw=2))
+#         ax[1].scatter(agent.x[0], agent.x[1], c='black', s=100, marker='o')
+#         # Plot the heading
+#         ax[1].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
 
 
-for i in range(param.nbAgents):
-    for j in range(i + 1, param.nbAgents):
-        if adjacency_matrix[i, j] == 1:
-            # Plot a line between the two agents
-            ax[0].plot([agents[i].x[0], agents[j].x[0]], [agents[i].x[1], agents[j].x[1]], color='orange', alpha=1, lw=2, linestyle='--')
+# for i in range(param.nbAgents):
+#     for j in range(i + 1, param.nbAgents):
+#         if adjacency_matrix[i, j] == 1:
+#             # Plot a line between the two agents
+#             ax[0].plot([agents[i].x[0], agents[j].x[0]], [agents[i].x[1], agents[j].x[1]], color='orange', alpha=1, lw=2, linestyle='--')
 
-# Heat
-ax[1].contourf(grid_x, grid_y, agents[0].heat, cmap='Blues', levels=10)
-ax[1].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-delta_quiver = 2
-grad_x = gradient_x[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_x[::delta_quiver, ::delta_quiver])
-grad_y = gradient_y[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_y[::delta_quiver, ::delta_quiver])
-qx = np.arange(0, map.shape[0], delta_quiver)
-qy = np.arange(0, map.shape[1], delta_quiver)
-q = ax[1].quiver(qx, qy, grad_x, grad_y, scale=1, scale_units='inches')
-plt.suptitle(f'Timestep: {t}')
-plt.tight_layout()
-# plt.pause(0.0001)
-plt.show()
+# # Heat
+# ax[1].contourf(grid_x, grid_y, agents[0].heat, cmap='Blues', levels=10)
+# ax[1].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+# delta_quiver = 2
+# grad_x = gradient_x[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_x[::delta_quiver, ::delta_quiver])
+# grad_y = gradient_y[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_y[::delta_quiver, ::delta_quiver])
+# qx = np.arange(0, map.shape[0], delta_quiver)
+# qy = np.arange(0, map.shape[1], delta_quiver)
+# q = ax[1].quiver(qx, qy, grad_x, grad_y, scale=1, scale_units='inches')
+# plt.suptitle(f'Timestep: {t}')
+# plt.tight_layout()
+# # plt.pause(0.0001)
+# plt.show()
 
-fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-# Plot the mean, std
-ax[0].cla()
-ax[1].cla()
-ax[0].set_aspect('equal')
-ax[1].set_aspect('equal')
-ax[0].contourf(grid_x, grid_y, agents[0].mu, cmap='Blues')
-ax[1].contourf(grid_x, grid_y, agents[0].std, cmap='Reds')
-bar = plt.colorbar(ax[0].contourf(grid_x, grid_y, agents[0].mu, cmap='Blues'), ax=ax[0])
-ax[0].set_title("Mean")
-bar = plt.colorbar(ax[1].contourf(grid_x, grid_y, agents[0].std, cmap='Reds'), ax=ax[1])
-ax[1].set_title("Std")
-plt.show()
+# fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+# # Plot the mean, std
+# ax[0].cla()
+# ax[1].cla()
+# ax[0].set_aspect('equal')
+# ax[1].set_aspect('equal')
+# ax[0].contourf(grid_x, grid_y, agents[0].mu, cmap='Blues')
+# ax[1].contourf(grid_x, grid_y, agents[0].std, cmap='Reds')
+# bar = plt.colorbar(ax[0].contourf(grid_x, grid_y, agents[0].mu, cmap='Blues'), ax=ax[0])
+# ax[0].set_title("Mean")
+# bar = plt.colorbar(ax[1].contourf(grid_x, grid_y, agents[0].std, cmap='Reds'), ax=ax[1])
+# ax[1].set_title("Std")
+# plt.show()
 
-fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-# Plot the coverage density and the source
-ax[0].cla()
-ax[1].cla()
-ax[0].set_aspect('equal')
-ax[1].set_aspect('equal')
-# ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens')
-bar = plt.colorbar(ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens'), ax=ax[0])
-ax[0].set_title("Coverage Density")
-ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges')
-bar = plt.colorbar(ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges'), ax=ax[1])
-ax[1].set_title("Source")
-plt.show()
+# fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+# # Plot the coverage density and the source
+# ax[0].cla()
+# ax[1].cla()
+# ax[0].set_aspect('equal')
+# ax[1].set_aspect('equal')
+# # ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens')
+# bar = plt.colorbar(ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens'), ax=ax[0])
+# ax[0].set_title("Coverage Density")
+# ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges')
+# bar = plt.colorbar(ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges'), ax=ax[1])
+# ax[1].set_title("Source")
+# plt.show()
 
-fig = plt.figure(figsize=(15, 5))
-# Plot the ergodic metric over time
-ax = fig.add_subplot(111)
-ax.set_title("Ergodic Metric")
-ax.plot(time_array, ergodic_metric)
-ax.set_xlabel("Time")
-ax.set_ylabel("Ergodic Metric")
-plt.show()
+# fig = plt.figure(figsize=(15, 5))
+# # Plot the ergodic metric over time
+# ax = fig.add_subplot(111)
+# ax.set_title("Ergodic Metric")
+# ax.plot(time_array, ergodic_metric)
+# ax.set_xlabel("Time")
+# ax.set_ylabel("Ergodic Metric")
+# plt.show()
 
-# Generate a showcase of the coverage density
-while True:
-    fig = plt.figure(figsize=(12, 5))
-    ax = fig.add_subplot(111)
-    ax.set_aspect('equal')
-    for t in range(0, param.nbDataPoints, 10):
-        ax.cla()
-        ax.contourf(grid_x, grid_y, _coverage_hist[:, :, t, 0], cmap='Greens', levels=10)
-        for i, agent in enumerate(agents):
-            ax.plot(agent.x_hist[t - 1:t + 1, 0], agent.x_hist[t - 1:t + 1, 1], color=f'C{i}', alpha=1, lw=2, linestyle='--')
-            ax.scatter(agent.x_hist[t, 0], agent.x_hist[t, 1], c='black', s=100, marker='o')
-            ax.plot(agent.x_hist[:t, 0], agent.x_hist[:t, 1], color=f'C{i}', alpha=1, lw=2)
+# # Generate a showcase of the coverage density
+# while True:
+#     fig = plt.figure(figsize=(12, 5))
+#     ax = fig.add_subplot(111)
+#     ax.set_aspect('equal')
+#     for t in range(0, param.nbDataPoints, 10):
+#         ax.cla()
+#         ax.contourf(grid_x, grid_y, _coverage_hist[:, :, t, 0], cmap='Greens', levels=10)
+#         for i, agent in enumerate(agents):
+#             ax.plot(agent.x_hist[t - 1:t + 1, 0], agent.x_hist[t - 1:t + 1, 1], color=f'C{i}', alpha=1, lw=2, linestyle='--')
+#             ax.scatter(agent.x_hist[t, 0], agent.x_hist[t, 1], c='black', s=100, marker='o')
+#             ax.plot(agent.x_hist[:t, 0], agent.x_hist[:t, 1], color=f'C{i}', alpha=1, lw=2)
         
-        for agent in agents:
-            for otger_agent in agents:
-                if np.linalg.norm(agent.x_hist[t] - otger_agent.x_hist[t]) < param.sens_range:
-                    ax.plot([agent.x_hist[t, 0], otger_agent.x_hist[t, 0]], [agent.x_hist[t, 1], otger_agent.x_hist[t, 1]], color='orange', alpha=1, lw=2, linestyle='--')
-        ax.set_title(f"Coverage Density at timestep {t}")
-        plt.pause(0.05)
-    plt.show()
-    if input("Continue? (y/n)") == 'n':
-        break
+#         for agent in agents:
+#             for otger_agent in agents:
+#                 if np.linalg.norm(agent.x_hist[t] - otger_agent.x_hist[t]) < param.sens_range:
+#                     ax.plot([agent.x_hist[t, 0], otger_agent.x_hist[t, 0]], [agent.x_hist[t, 1], otger_agent.x_hist[t, 1]], color='orange', alpha=1, lw=2, linestyle='--')
+#         ax.set_title(f"Coverage Density at timestep {t}")
+#         plt.pause(0.05)
+#     plt.show()
+#     if input("Continue? (y/n)") == 'n':
+#         break
