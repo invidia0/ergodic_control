@@ -87,7 +87,7 @@ class SecondOrderAgentWithHeading:
         dt=1,  # time step
         id=0, # agent id
     ):
-        self.x = np.array(x)  # position [x, y]
+        self.x = np.array(x)  # position
         self.theta = theta  # heading
         self.dx = 0  # velocity magnitude
         self.dtheta = 0  # angular velocity
@@ -145,3 +145,66 @@ class SecondOrderAgentWithHeading:
             "angular_velocity": self.dtheta,
             "trajectory": self.x_hist,
         }
+    
+class DoubleIntegratorAgent:
+    """
+    A 2D planar quadrotor model with heading, double integrator dynamics, and input transformation.
+    """
+    def __init__(
+        self,
+        x,  # initial position [x, y]
+        theta=0,  # initial heading
+        max_dx=1,  # maximum velocity
+        max_ddx=0.2,  # maximum acceleration
+        max_dtheta=np.pi / 4,  # maximum angular velocity
+        dt=1,  # time step
+        id=0,  # agent id
+    ):
+        self.x = np.array(x, dtype=np.float64)  # Position [x, y]
+        self.v = np.array([0.0, 0.0], dtype=np.float64)  # Velocity [vx, vy]
+        self.theta = theta  # Heading angle
+        self.max_dx = max_dx
+        self.max_ddx = max_ddx
+        self.max_dtheta = max_dtheta
+        self.dt = dt
+        self.id = id
+        self.x_hist = np.empty((0, 3))  # History of states [x, y, theta]
+
+    def update(self, u):
+        """
+        Update the state of the agent given the control input.
+
+        Parameters:
+        u: np.ndarray
+            Control input [u_x, u_y] (accelerations)
+        """
+        # Clamp acceleration to maximum limits
+        u = np.clip(u, -self.max_ddx, self.max_ddx)
+
+        # Update velocity
+        self.v += u * self.dt
+        speed = np.linalg.norm(self.v)
+
+        # Clamp velocity to maximum speed
+        if speed > self.max_dx:
+            self.v = self.v / speed * self.max_dx
+
+        # Update position
+        self.x += self.v * self.dt
+
+        # Update heading based on velocity direction
+        if speed > 1e-6:  # Avoid division by zero for near-zero velocity
+            desired_theta = np.arctan2(self.v[1], self.v[0])
+            # Limit heading rate of change
+            delta_theta = np.clip(desired_theta - self.theta, -self.max_dtheta, self.max_dtheta)
+            self.theta += delta_theta
+
+        # Keep heading within [-pi, pi]
+        self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi
+
+        # Save state history
+        self.x_hist = np.vstack((self.x_hist, np.array([self.x[0], self.x[1], self.theta])))
+
+    def __repr__(self):
+        return (f"Agent(id={self.id}, position={self.x}, velocity={self.v}, "
+                f"heading={self.theta:.2f})")

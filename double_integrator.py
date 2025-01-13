@@ -34,7 +34,7 @@ grid = np.vstack([grid_x.flatten(), grid_y.flatten()]).T
 Parameters
 ===============================
 """
-param_file = os.path.dirname(os.path.realpath(__file__)) + '/params/' + 'hedac_params_map_05.json'
+param_file = os.path.dirname(os.path.realpath(__file__)) + '/params/' + 'doubleintegrator.json'
 
 with open(param_file, 'r') as f:
     param_data = json.load(f)
@@ -78,13 +78,23 @@ x0_array = np.array([[10.5, 25],
 for i in range(param.nbAgents):
     x0 = x0_array[i]
     theta0 = np.random.uniform(0, 2 * np.pi)
-    agent = models.SecondOrderAgentWithHeading(x=x0,
-                                                theta=theta0,
-                                                max_dx=param.max_dx,
-                                                max_ddx=param.max_ddx,
-                                                max_dtheta=param.max_dtheta,
-                                                dt=param.dt_agent,
-                                                id=i)
+    # agent = models.SecondOrderAgentWithHeading(x=x0,
+    #                                             theta=theta0,
+    #                                             max_dx=param.max_dx,
+    #                                             max_ddx=param.max_ddx,
+    #                                             max_dtheta=param.max_dtheta,
+    #                                             dt=param.dt_agent,
+    #                                             id=i)
+    agent = models.DoubleIntegratorAgent(
+        x=x0,
+        theta=theta0,
+        max_dx=param.max_dx,
+        max_ddx=param.max_ddx,
+        max_dtheta=param.max_dtheta,
+        dt=param.dt_agent,
+        id=i
+    )
+
     agent.sens_range = param.sens_range
     agents.append(agent)
 
@@ -138,7 +148,7 @@ for agent in agents:
     agent.fov_edges = utilities.rotate_and_translate(tmp, agent.x, agent.theta)
 
 coverage_block = utilities.agent_block(param.nbVar, param.min_kernel_val, param.agent_radius)
-param.kernel_size = coverage_block.shape[0] + param.safety_dist
+param.kernel_size = coverage_block.shape[0]
 
 """
 ===============================
@@ -246,11 +256,12 @@ for chunk in range(num_chunks):
             if param.use_fov:                
                 """ Field of View (FOV) """
                 # Probably we can avoid clipping if we handle the collected samples for the GP?
-                fov_edges_moved = utilities.relative_move_fov(agent.fov_edges,
-                                                            agent.last_position,
-                                                            agent.last_heading, 
-                                                            agent.x, 
-                                                            agent.theta).squeeze()
+                # fov_edges_moved = utilities.relative_move_fov(agent.fov_edges,
+                #                                             agent.last_position,
+                #                                             agent.last_heading, 
+                #                                             agent.x, 
+                #                                             agent.theta).squeeze()
+                fov_edges_moved = utilities.rotate_and_translate(tmp, agent.x, agent.theta)
                 fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, fov_edges_moved, occ_map, closed_map)
                 fov_points = utilities.insidepolygon(fov_edges_clipped).astype(int)
 
@@ -401,8 +412,11 @@ for chunk in range(num_chunks):
             agent.grad = utilities.calculate_gradient_map(
                 param, agent, gradient_x, gradient_y, map
             )
-            agent.update(agent.grad)
-            
+
+            u = np.array([agent.grad[0], agent.grad[1]])
+        
+            agent.update(u)
+
             # Debug
             # if agent.id == 0:
             #     _heat_hist.append(agent.heat)
