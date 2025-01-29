@@ -63,14 +63,13 @@ param.dt = min(
 
 agents = []
 x0_array = np.array([[10.5, 25],
-                [30, 25],
+                [30, 15],
                 [10.5, 10],
                 [45, 45],])
 
 free_cells = np.array(np.where(map == 0)).T
 
-x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
-
+# x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
 
 for i in range(param.nbAgents):
     x0 = x0_array[i]
@@ -103,26 +102,20 @@ _, density_map = utilities.generate_gmm_on_map(map,
                                              param.nbVar,
                                              random_state=param.random_seed)
 
-# Extract values from density_map where map == 0 and ignore NaNs
-free_cells_mask = (map == 0)
-norm_density_map = density_map[free_cells_mask]  # Extract only free cells
+means = np.array([[45, 7], [20, 45]])
+cov = np.array([[[20, 0], [0, 20]], [[20, 0], [0, 20]], [[20, 0], [0, 20]]])
+density_map = utilities.gauss_pdf(grid, means[0], cov[0]) + \
+            utilities.gauss_pdf(grid, means[1], cov[1])
+                # utilities.gauss_pdf(grid, means[2], cov[2])
+norm_density_map = utilities.min_max_normalize(density_map).reshape(map.shape)
 
-# Remove NaNs before normalization
-norm_density_map = norm_density_map[~np.isnan(norm_density_map)]
-
-# norm_density_map = utilities.min_max_normalize(norm_density_map)
-norm_density_map = utilities.normalize_mat(norm_density_map)
-
-# Normalize over the free cells
-# norm_density_map /= np.sum(norm_density_map)  # Ensure sum is 1
-
-# Assign back to goal_density
-goal_density = np.zeros_like(map, dtype=float)  # Ensure dtype supports floats
-goal_density[free_cells_mask] = norm_density_map
-
+# Compute the area of the map
 cell_area = param.dx * param.dx
 param.area = np.sum(map == 0) * cell_area
-# goal_density = utilities.normalize_mat(goal_density)
+
+goal_density = np.zeros_like(map)
+goal_density[free_cells[:, 0], free_cells[:, 1]] = norm_density_map[free_cells[:, 0], free_cells[:, 1]]
+
 
 """
 ===============================
@@ -233,13 +226,9 @@ for chunk in range(num_chunks):
 
         # source = goal_density * np.exp(-coverage_density) # Eq. 15 - Source ter
         # diff = utilities.min_max_normalize(goal_density) - utilities.min_max_normalize(coverage_density)
-        diff = goal_density - coverage # Eq. 6 - Difference between the goal density and the coverage density
+        diff = utilities.normalize_mat(goal_density) - coverage # Eq. 6 - Difference between the goal density and the coverage density
         source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
         source = np.where(map == 0, source, 0)
-        # ergodic_metric[t] = np.linalg.norm(diff, 2)
-        # _em_diff = np.linalg.norm(source) / (np.sum(goal_density) * (param.dx ** 2))
-        _em_diff = np.sum(source / np.linalg.norm(source)) * param.dx * param.dx
-        ergodic_metric[t] = _em_diff
 
         local_cooling = utilities.normalize_mat(local_cooling) * param.area # Eq. 16 - Local cooling scaled
         source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
@@ -247,24 +236,17 @@ for chunk in range(num_chunks):
         # _em_diff = utilities.min_max_normalize(source)
         # _em_diff = source / np.linalg.norm(source)
 
-        current_heat = np.zeros((param.width, param.height))
-        current_heat[1:-1, 1:-1] = param.dt * (
-            (
-                + param.alpha * utilities.offset(heat, 1, 0)
-                + param.alpha * utilities.offset(heat, -1, 0)
-                + param.alpha * utilities.offset(heat, 0, 1)
-                + param.alpha * utilities.offset(heat, 0, -1)
-                - 4.0 * utilities.offset(heat, 0, 0)
-            )
-            / (param.dx * param.dx)
-            + param.source_strength * utilities.offset(source, 0, 0)
-            - param.local_cooling * utilities.offset(local_cooling, 0, 0)
-            - param.beta * utilities.offset(heat, 0, 0)
-        )  + utilities.offset(heat, 0, 0)
-
-        # Update only the inner cells
-        current_heat = np.where(map == 0, current_heat, 0)
-        heat = current_heat.astype(np.float32)
+        # current_heat = np.zeros((param.width, param.height))
+        heat = utilities.update_heat_optimized(heat, 
+                                                source,
+                                                map,
+                                                local_cooling, 
+                                                param.dt,
+                                                param.alpha,
+                                                param.source_strength,
+                                                param.beta,
+                                                param.local_cooling,
+                                                param.dx).astype(np.float32)
 
         gradient_y, gradient_x = np.gradient(heat.T, 1, 1)
 
@@ -303,9 +285,12 @@ for chunk in range(num_chunks):
             for idx, agent in enumerate(agents):
                 _path_hist[:, t, idx] = agent.x_hist[-1, :]
 
-filepath = os.path.join(os.getcwd(), 'performance_complex/')
+filepath = os.path.join(os.getcwd(), 'centralized_distributed_comparison/')
+np.save(filepath + 'goal_density.npy', goal_density)
+np.save(filepath + 'r1_hist.npy', agents[0].x_hist)
+np.save(filepath + 'r2_hist.npy', agents[1].x_hist)
 # np.save(filepath + 'I2019_s3_r4.npy', ergodic_metric)
-np.save(filepath + 'HEDAC_s3_r1.npy', ergodic_metric)
+# np.save(filepath + 'HEDAC_s3_r1.npy', ergodic_metric)
 # Flush changes loto disk after writing
 if param.save_data:
     if not os.path.exists(data_storage_path):

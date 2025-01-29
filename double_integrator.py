@@ -63,7 +63,7 @@ param.dt = min(
 
 agents = []
 x0_array = np.array([[10.5, 25],
-                [30, 25],
+                [30, 15],
                 [10.5, 10],
                 [45, 45],])
 
@@ -71,7 +71,7 @@ x0_array = np.array([[10.5, 25],
 
 free_cells = np.array(np.where(map == 0)).T
 
-x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
+# x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
 
 print(f"Initial positions: {x0_array}")
 
@@ -240,8 +240,8 @@ for agent in agents:
     agent.angular_error = 0
     agent.coverage_density = np.zeros_like(goal_density)
 
-# Stack the precomputed samples
-agent.subset = np.vstack((agent.subset, preSamples))
+    # Stack the precomputed samples
+    agent.subset = np.vstack((agent.subset, preSamples))
 
 # Create a matrix with ones on the diagonal
 adjacency_matrix = np.eye(param.nbAgents)
@@ -421,12 +421,10 @@ for chunk in range(num_chunks):
                 _path_hist[:, t, idx] = agent.x_hist[-1, :]
 
 filepath = os.path.join(os.getcwd(), 'time_decay_effect/')
-# Save the robot hist
-# Save the goal density
-# np.save(filepath + 'goal_density.npy', goal_density)
-np.save(filepath + 'hist_nodecay.npy', agents[0].x_hist)
-# np.save(filepath + 'proposed_s3_r4.npy', ergodic_metric)
-# Flush changes to disk after writing
+np.save(filepath + 'hist_decay.npy', agents[0].x_hist)
+# np.save(filepath + 'r1_distributed_hist.npy', agents[0].x_hist)
+# np.save(filepath + 'r2_distributed_heat.npy', agents[1].x_hist)
+
 if param.save_data:
     if not os.path.exists(data_storage_path):
         os.makedirs(data_storage_path)
