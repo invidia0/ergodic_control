@@ -146,10 +146,80 @@ class SecondOrderAgentWithHeading:
             "trajectory": self.x_hist,
         }
     
+# class DoubleIntegratorAgent:
+#     """
+#     A 2D planar quadrotor model with heading, double integrator dynamics, and input transformation.
+#     """
+#     def __init__(
+#         self,
+#         x,  # initial position [x, y]
+#         theta=0,  # initial heading
+#         max_dx=1,  # maximum velocity
+#         max_ddx=0.2,  # maximum acceleration
+#         max_dtheta=np.pi / 4,  # maximum angular velocity
+#         max_ddtheta=np.pi / 8,  # maximum angular acceleration
+#         dt=1,  # time step
+#         id=0,  # agent id
+#     ):
+#         self.x = np.array(x, dtype=np.float64)  # Position [x, y]
+#         self.v = np.array([0.0, 0.0], dtype=np.float64)  # Velocity [vx, vy]
+#         self.theta = theta  # Heading angle
+#         self.max_dx = max_dx
+#         self.max_ddx = max_ddx
+#         self.max_dtheta = max_dtheta
+#         self.max_ddtheta = max_ddtheta
+#         self.omega = 0.0  # Angular velocity
+#         self.dt = dt
+#         self.id = id
+#         self.x_hist = np.empty((0, 3))  # History of states [x, y, theta]
+
+#     def update(self, u):
+#         """
+#         Update the state of the agent given the control input.
+
+#         Parameters:
+#         u: np.ndarray
+#             Control input [u_x, u_y, u_theta] (accelerations)
+#         """
+#         # Split control input into linear and angular components
+#         linear_u = u[:2]  # [u_x, u_y]
+#         angular_u = u[2]  # u_theta
+
+#         # Clamp linear and angular accelerations to maximum limits
+#         linear_u = np.clip(linear_u, -self.max_ddx, self.max_ddx)
+#         angular_u = np.clip(angular_u, -self.max_ddtheta, self.max_ddtheta)
+
+#         # Update linear velocity
+#         self.v += linear_u * self.dt
+#         speed = np.linalg.norm(self.v)
+
+#         # Clamp linear velocity to maximum speed
+#         if speed > self.max_dx:
+#             self.v = self.v / speed * self.max_dx
+
+#         # Update position
+#         self.x += self.v * self.dt
+
+#         # Update angular velocity
+#         self.omega += angular_u * self.dt
+#         self.omega = np.clip(self.omega, -self.max_dtheta, self.max_dtheta)
+
+#         # Update heading angle
+#         self.theta += self.omega * self.dt
+
+#         # Keep heading within [-pi, pi]
+#         self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi
+
+#         # Save state history
+#         self.x_hist = np.vstack((self.x_hist, np.array([self.x[0], self.x[1], self.theta])))
+
+    # def __repr__(self):
+    #     return (f"Agent(id={self.id}, position={self.x}, velocity={self.v}, "
+    #             f"heading={self.theta:.2f})")
+
+import numpy as np
+
 class DoubleIntegratorAgent:
-    """
-    A 2D planar quadrotor model with heading, double integrator dynamics, and input transformation.
-    """
     def __init__(
         self,
         x,  # initial position [x, y]
@@ -157,6 +227,7 @@ class DoubleIntegratorAgent:
         max_dx=1,  # maximum velocity
         max_ddx=0.2,  # maximum acceleration
         max_dtheta=np.pi / 4,  # maximum angular velocity
+        max_ddtheta=np.pi / 8,  # maximum angular acceleration
         dt=1,  # time step
         id=0,  # agent id
     ):
@@ -166,6 +237,8 @@ class DoubleIntegratorAgent:
         self.max_dx = max_dx
         self.max_ddx = max_ddx
         self.max_dtheta = max_dtheta
+        self.max_ddtheta = max_ddtheta
+        self.omega = 0.0  # Angular velocity
         self.dt = dt
         self.id = id
         self.x_hist = np.empty((0, 3))  # History of states [x, y, theta]
@@ -176,35 +249,37 @@ class DoubleIntegratorAgent:
 
         Parameters:
         u: np.ndarray
-            Control input [u_x, u_y] (accelerations)
+            Control input [u_x, u_y, u_theta] (accelerations in body frame)
         """
-        # Clamp acceleration to maximum limits
-        u = np.clip(u, -self.max_ddx, self.max_ddx)
+        # Split control input into linear and angular components
+        linear_u = u[:2]  # [u_x, u_y]
+        angular_u = u[2]  # u_theta
 
-        # Update velocity
-        self.v += u * self.dt
+        # Clamp linear and angular accelerations to maximum limits
+        linear_u = np.clip(linear_u, -self.max_ddx, self.max_ddx)
+        angular_u = np.clip(angular_u, -self.max_ddtheta, self.max_ddtheta)
+
+        # # Update linear velocity in the global frame
+        self.v += linear_u * self.dt
+        # self.v += linear_u * self.dt
         speed = np.linalg.norm(self.v)
 
-        # Clamp velocity to maximum speed
+        # Clamp linear velocity to maximum speed
         if speed > self.max_dx:
             self.v = self.v / speed * self.max_dx
 
         # Update position
         self.x += self.v * self.dt
 
-        # Update heading based on velocity direction
-        if speed > 1e-6:  # Avoid division by zero for near-zero velocity
-            desired_theta = np.arctan2(self.v[1], self.v[0])
-            # Limit heading rate of change
-            delta_theta = np.clip(desired_theta - self.theta, -self.max_dtheta, self.max_dtheta)
-            self.theta += delta_theta
+        # Update angular velocity
+        self.omega += angular_u * self.dt
+        self.omega = np.clip(self.omega, -self.max_dtheta, self.max_dtheta)
+
+        # Update heading angle
+        self.theta += self.omega * self.dt
 
         # Keep heading within [-pi, pi]
         self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi
 
         # Save state history
         self.x_hist = np.vstack((self.x_hist, np.array([self.x[0], self.x[1], self.theta])))
-
-    def __repr__(self):
-        return (f"Agent(id={self.id}, position={self.x}, velocity={self.v}, "
-                f"heading={self.theta:.2f})")
