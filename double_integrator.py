@@ -397,7 +397,7 @@ for agent in agents:
 # FOV
 if param.use_fov:
     for agent in agents:
-        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map)
+        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
         ax[0].fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color='blue', alpha=0.3)
         # Heading
         ax[0].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
@@ -453,7 +453,6 @@ ax[0].cla()
 ax[1].cla()
 ax[0].set_aspect('equal')
 ax[1].set_aspect('equal')
-# ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens')
 bar = plt.colorbar(ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens'), ax=ax[0])
 ax[0].set_title("Coverage Density")
 ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges')
@@ -466,34 +465,8 @@ fig = plt.figure(figsize=(15, 5))
 # Plot the ergodic metric over time
 ax = fig.add_subplot(111)
 ax.set_title("Ergodic Metric")
-# # Normalize the ergodic metric
-# for i in range(param.nbAgents):
-#     ergodic_metric[:, i] = (ergodic_metric[:, i] - ergodic_metric[:, i].min()) / (ergodic_metric[:, i].max() - ergodic_metric[:, i].min())
 for i in range(param.nbAgents):
     ax.plot(time_array, ergodic_metric[:, i], label=f"Agent {i}")
 ax.set_xlabel("Time")
 ax.set_ylabel("Ergodic Metric")
 plt.show()
-
-# Generate a showcase of the coverage density
-while True:
-    fig = plt.figure(figsize=(12, 5))
-    ax = fig.add_subplot(121)
-    ax2 = fig.add_subplot(122)
-    ax.set_aspect('equal')
-    ax2.set_aspect('equal')
-    for t in range(0, param.nbDataPoints, 10):
-        ax.cla()
-        ax.contourf(grid_x, grid_y, _coverage_hist[:, :, t, 0], cmap='Blues')
-        for i, agent in enumerate(agents):
-            ax.plot(agent.x_hist[t - 1:t + 1, 0], agent.x_hist[t - 1:t + 1, 1], color=f'C{i}', alpha=1, lw=2, linestyle='--')
-            ax.scatter(agent.x_hist[t, 0], agent.x_hist[t, 1], c='black', s=100, marker='o')
-            ax.plot(agent.x_hist[:t, 0], agent.x_hist[:t, 1], color=f'C{i}', alpha=1, lw=2)
-        
-        ax2.cla()
-        # Plot the source
-        ax2.contourf(grid_x, grid_y, _source_hist[:, :, t, 0], cmap='Oranges')
-        plt.pause(0.05)
-    plt.show()
-    if input("Continue? (y/n)") == 'n':
-        break
