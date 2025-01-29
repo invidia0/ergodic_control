@@ -109,8 +109,8 @@ free_cells = np.array(np.where(map == 0)).T  # Replace with your actual free cel
 means = np.array([[45, 7], [20, 45], [8, 8]])
 cov = np.array([[[10, 0], [0, 10]], [[10, 0], [0, 10]], [[10, 0], [0, 10]]])
 density_map = utilities.gauss_pdf(grid, means[0], cov[0]) + \
-            utilities.gauss_pdf(grid, means[1], cov[1]) + \
-                utilities.gauss_pdf(grid, means[2], cov[2])
+            utilities.gauss_pdf(grid, means[1], cov[1]) 
+                # utilities.gauss_pdf(grid, means[2], cov[2])
 
 norm_density_map = utilities.min_max_normalize(density_map).reshape(map.shape)
 
@@ -240,6 +240,9 @@ for agent in agents:
     agent.angular_error = 0
     agent.coverage_density = np.zeros_like(goal_density)
 
+# Stack the precomputed samples
+agent.subset = np.vstack((agent.subset, preSamples))
+
 # Create a matrix with ones on the diagonal
 adjacency_matrix = np.eye(param.nbAgents)
 obstacles = np.zeros((param.nbAgents, param.nbAgents))
@@ -346,24 +349,35 @@ for chunk in range(num_chunks):
             
             agent.local_cooling = utilities.normalize_mat(agent.local_cooling) * param.area # Eq. 16 - Local cooling scaled
 
-            agent.current_heat = np.zeros((param.width, param.height))
-            agent.current_heat[1:-1, 1:-1] = param.dt * (
-                (
-                    + param.alpha * utilities.offset(agent.heat, 1, 0)
-                    + param.alpha * utilities.offset(agent.heat, -1, 0)
-                    + param.alpha * utilities.offset(agent.heat, 0, 1)
-                    + param.alpha * utilities.offset(agent.heat, 0, -1)
-                    - 4.0 * utilities.offset(agent.heat, 0, 0)
-                )
-                / (param.dx * param.dx)
-                + param.source_strength * utilities.offset(agent.source, 0, 0)
-                - param.local_cooling * utilities.offset(agent.local_cooling, 0, 0)
-                - param.beta * utilities.offset(agent.heat, 0, 0)
-            )  + utilities.offset(agent.heat, 0, 0)
+            agent.heat = utilities.update_heat_optimized(agent.heat, 
+                                                         agent.source,
+                                                         map,
+                                                         agent.local_cooling, 
+                                                         param.dt,
+                                                         param.alpha,
+                                                         param.source_strength,
+                                                         param.beta,
+                                                         param.local_cooling,
+                                                         param.dx).astype(np.float32)
 
-            # Update only the inner cells
-            agent.current_heat = np.where(map == 0, agent.current_heat, 0)
-            agent.heat = agent.current_heat.astype(np.float32)
+            # agent.current_heat = np.zeros((param.width, param.height))
+            # agent.current_heat[1:-1, 1:-1] = param.dt * (
+            #     (
+            #         + param.alpha * utilities.offset(agent.heat, 1, 0)
+            #         + param.alpha * utilities.offset(agent.heat, -1, 0)
+            #         + param.alpha * utilities.offset(agent.heat, 0, 1)
+            #         + param.alpha * utilities.offset(agent.heat, 0, -1)
+            #         - 4.0 * utilities.offset(agent.heat, 0, 0)
+            #     )
+            #     / (param.dx * param.dx)
+            #     + param.source_strength * utilities.offset(agent.source, 0, 0)
+            #     - param.local_cooling * utilities.offset(agent.local_cooling, 0, 0)
+            #     - param.beta * utilities.offset(agent.heat, 0, 0)
+            # )  + utilities.offset(agent.heat, 0, 0)
+
+            # # Update only the inner cells
+            # agent.current_heat = np.where(map == 0, agent.current_heat, 0)
+            # agent.heat = agent.current_heat.astype(np.float32)
 
             gradient_y, gradient_x = np.gradient(agent.heat.T, 1, 1)
 
@@ -406,7 +420,11 @@ for chunk in range(num_chunks):
                 _coverage_hist[:, :, t, idx] = agent.coverage_density
                 _path_hist[:, t, idx] = agent.x_hist[-1, :]
 
-# filepath = os.path.join(os.getcwd(), 'performance_complex/')
+filepath = os.path.join(os.getcwd(), 'time_decay_effect/')
+# Save the robot hist
+# Save the goal density
+# np.save(filepath + 'goal_density.npy', goal_density)
+np.save(filepath + 'hist_nodecay.npy', agents[0].x_hist)
 # np.save(filepath + 'proposed_s3_r4.npy', ergodic_metric)
 # Flush changes to disk after writing
 if param.save_data:
@@ -456,7 +474,7 @@ for agent in agents:
 # FOV
 if param.use_fov:
     for agent in agents:
-        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map)
+        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
         ax[0].fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color='blue', alpha=0.3)
         # Heading
         ax[0].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
@@ -520,39 +538,12 @@ bar = plt.colorbar(ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Orange
 ax[1].set_title("Source")
 plt.show()
 
-
 fig = plt.figure(figsize=(15, 5))
 # Plot the ergodic metric over time
 ax = fig.add_subplot(111)
 ax.set_title("Ergodic Metric")
-# # Normalize the ergodic metric
-# for i in range(param.nbAgents):
-#     ergodic_metric[:, i] = (ergodic_metric[:, i] - ergodic_metric[:, i].min()) / (ergodic_metric[:, i].max() - ergodic_metric[:, i].min())
 for i in range(param.nbAgents):
     ax.plot(time_array, ergodic_metric[:, i], label=f"Agent {i}")
 ax.set_xlabel("Time")
 ax.set_ylabel("Ergodic Metric")
 plt.show()
-
-# Generate a showcase of the coverage density
-while True:
-    fig = plt.figure(figsize=(12, 5))
-    ax = fig.add_subplot(121)
-    ax2 = fig.add_subplot(122)
-    ax.set_aspect('equal')
-    ax2.set_aspect('equal')
-    for t in range(0, param.nbDataPoints, 10):
-        ax.cla()
-        ax.contourf(grid_x, grid_y, _coverage_hist[:, :, t, 0], cmap='Blues')
-        for i, agent in enumerate(agents):
-            ax.plot(agent.x_hist[t - 1:t + 1, 0], agent.x_hist[t - 1:t + 1, 1], color=f'C{i}', alpha=1, lw=2, linestyle='--')
-            ax.scatter(agent.x_hist[t, 0], agent.x_hist[t, 1], c='black', s=100, marker='o')
-            ax.plot(agent.x_hist[:t, 0], agent.x_hist[:t, 1], color=f'C{i}', alpha=1, lw=2)
-        
-        ax2.cla()
-        # Plot the source
-        ax2.contourf(grid_x, grid_y, _source_hist[:, :, t, 0], cmap='Oranges')
-        plt.pause(0.05)
-    plt.show()
-    if input("Continue? (y/n)") == 'n':
-        break
