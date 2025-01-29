@@ -15,7 +15,7 @@
     "fov_deg": 90,
     "fov_depth": 5,
     "wall_boundary_gradient": 1e-4,
-    "save_data": true,
+    "save_data": false,
     "nbGaussian": 3,
     "nbParticles": 2000,
     "nbVar": 2,
@@ -23,7 +23,7 @@
     "decay": 0.00085,
     "max_dtheta": 1.0,
     "max_ddtheta": 2.5,
-    "nbDataPoints": 8000,
+    "nbDataPoints": 5000,
     "use_fov": true,
     "boundary_gradient": 1e-4
   }
