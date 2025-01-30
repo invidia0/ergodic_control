@@ -1,4 +1,4 @@
-from .models import SecondOrderAgent
+from .models import *
 from .utilities import *
 
 __all__ = ["SecondOrderAgent", "get_GMM", "discrete_gmm", \
