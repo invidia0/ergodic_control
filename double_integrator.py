@@ -14,10 +14,16 @@ warnings.filterwarnings("ignore")
 Load the map
 """
 # Set the map
-map_name = 'simpleMap_05'
+map_name = 'complexMap_05'
 # Load the map
 map_path = os.path.join(os.getcwd(), 'example_maps/', map_name + '.npy')
-map = np.load(map_path)
+map = np.load(map_path).T
+
+# Create a map  with just the border
+# border_map = np.ones_like(map)
+# border_map[1:-1, 1:-1] = 0
+# map = border_map
+
 # Check if the map is closed or open
 closed_map = True
 # Extend the map with 1 cell to avoid index out of bounds
@@ -62,10 +68,10 @@ param.dt = min(
 )  # for the stability of implicit integration of Heat Equation
 
 agents = []
-x0_array = np.array([[10.5, 25],
-                [30, 15],
-                [10.5, 10],
-                [45, 45],])
+x0_array = np.array([[9, 7],
+                [91, 72],
+                [13, 72],
+                [92, 12],])
 
 # generate random initial positions inside the free cells
 
@@ -100,26 +106,20 @@ Goal Density
 ===============================
 """
 free_cells = np.array(np.where(map == 0)).T  # Replace with your actual free cell array
-# _, density_map = utilities.generate_gmm_on_map(map,
-#                                              free_cells,
-#                                              param.nbGaussian,
-#                                              param.nbParticles,
-#                                              param.nbVar,
-#                                              random_state=param.random_seed)
-means = np.array([[45, 7], [20, 45], [8, 8]])
-cov = np.array([[[10, 0], [0, 10]], [[10, 0], [0, 10]], [[10, 0], [0, 10]]])
-density_map = utilities.gauss_pdf(grid, means[0], cov[0]) + \
-            utilities.gauss_pdf(grid, means[1], cov[1]) 
-                # utilities.gauss_pdf(grid, means[2], cov[2])
+_, density_map = utilities.generate_gmm_on_map(map,
+                                             free_cells,
+                                             param.nbGaussian,
+                                             param.nbParticles,
+                                             param.nbVar,
+                                             random_state=param.random_seed)
+# means = np.array([[40, 40], [20, 45], [8, 8]])
+# cov = np.array([[[20, 0], [0, 20]], [[10, 0], [0, 10]], [[10, 0], [0, 10]]])
+# density_map = utilities.gauss_pdf(grid, means[0], cov[0]) #+ \
+#             # utilities.gauss_pdf(grid, means[1], cov[1]) 
+#                 # utilities.gauss_pdf(grid, means[2], cov[2])
 
-norm_density_map = utilities.min_max_normalize(density_map).reshape(map.shape)
-
-# Normalize the density map (mind the NaN values)
-# norm_density_map = density_map[~np.isnan(density_map)]
-# norm_density_map = utilities.min_max_normalize(norm_density_map)
-
-# norm_density_map = np.where(np.isnan(map), np.nan, norm_density_map)
-# norm_density_map = np.where(map == 1, np.nan, norm_density_map)
+# norm_density_map = utilities.min_max_normalize(density_map).reshape(map.shape)
+norm_density_map = density_map.reshape(map.shape)
 
 # Compute the area of the map
 cell_area = param.dx * param.dx
@@ -127,18 +127,15 @@ param.area = np.sum(map == 0) * cell_area
 
 goal_density = np.zeros_like(map)
 goal_density[free_cells[:, 0], free_cells[:, 1]] = norm_density_map[free_cells[:, 0], free_cells[:, 1]]
-
-# goal_density[~np.isnan(norm_density_map)] = norm_density_map[~np.isnan(norm_density_map)]
+# Min-max normalize the goal density
+goal_density = utilities.min_max_normalize(goal_density)
 
 # fig = plt.figure(figsize=(12, 5))
 # ax = fig.add_subplot(111)
 # ax.set_aspect('equal')
-# ax.contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
-# # Colorbar
-# bar = plt.colorbar(ax.contourf(grid_x, grid_y, goal_density, cmap='Greys'), ax=ax)
-# bar.set_label('Density')
-
-# # ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+# ax.set_title('Goal Density')
+# ax.contourf(grid_x, grid_y, goal_density, cmap='Blues')
+# ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
 # plt.show()
 
 """
@@ -169,7 +166,7 @@ Gaussian process and decay
 ===============================
 """
 # For the moment, no noise is added to the kernel
-noise = 0.005
+noise = 0.001
 kernel = C(1.0) * RBF(1.0) + WhiteKernel(1e-5)
 gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=3, normalize_y=False)
 pooled_dataset = np.empty((0, 3))
@@ -218,6 +215,9 @@ if param.save_data:
     _path_hist = np.memmap(data_storage_path + "path_hist.dat", dtype=np.float64, mode='w+', 
                             shape=(3, param.nbDataPoints, param.nbAgents))
 
+_source_hist = np.memmap("source_hist.dat", dtype=np.float64, mode='w+', 
+                            shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
+    
 """
 ===============================
 Main Loop
@@ -230,8 +230,8 @@ for agent in agents:
     agent.samples = np.empty((0, 3))
     agent.pooled_dataset = np.empty((0, 3))
     agent.subset = np.empty((0, 3))
-    agent.coverage_density_hist = np.zeros((15, 2, param.nbDataPoints), dtype=int)
-    agent.coverage_density_prob_hist = np.zeros((15, param.nbDataPoints), dtype=float)
+    agent.coverage_density_hist = np.zeros((50, 2, param.nbDataPoints), dtype=int)
+    agent.coverage_density_prob_hist = np.zeros((50, param.nbDataPoints), dtype=float)
 
     agent.neighbors = []
     agent.last_neighbors = []
@@ -241,7 +241,7 @@ for agent in agents:
     agent.coverage_density = np.zeros_like(goal_density)
 
     # Stack the precomputed samples
-    agent.subset = np.vstack((agent.subset, preSamples))
+    # agent.subset = np.vstack((agent.subset, preSamples))
 
 # Create a matrix with ones on the diagonal
 adjacency_matrix = np.eye(param.nbAgents)
@@ -263,6 +263,10 @@ for chunk in range(num_chunks):
             adjacency_matrix = utilities.share_samples(agents, map, param.sens_range, adjacency_matrix)
 
         for agent in agents:
+            # Check if the agent is colliding with an obstacle
+            if map[agent.x[0].astype(int), agent.x[1].astype(int)] == 1:
+                print(f"Agent {agent.id} collided with an obstacle")
+                raise ValueError("Agent collided with an obstacle")
             agent.local_cooling = np.zeros_like(goal_density)
 
             fov_edges_moved = utilities.rotate_and_translate(tmp, agent.x, agent.theta)
@@ -270,8 +274,8 @@ for chunk in range(num_chunks):
             fov_points = utilities.insidepolygon(fov_edges_clipped).astype(int)
 
             # Delete points outside the box
-            fov_probs = np.pow(1/param.agent_radius, -2) * utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
-            # fov_probs = utilities.normalize_mat(fov_probs)
+            fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
+            fov_probs = utilities.normalize_mat(fov_probs)
             if param.decay == 0:
                 agent.coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs
             else:
@@ -303,11 +307,11 @@ for chunk in range(num_chunks):
                     # gpr.fit(agent.subset[:, :2], agent.subset[:, 2]) # Skipping for simulation speed
 
                     agent.combo_density, agent.mu, agent.std, agent.std_pred_test = utilities.compute_combo(agent.subset, grid, map, gpr.kernel_)
-                agent.std[agent.std < 0.30] = 0
+                agent.std[agent.std < 0.3] = 0
             else:
                 agent.subset = np.unique(np.vstack((agent.subset, utilities.max_pooling(agent.samples, 5))), axis=0, return_index=False)
                 agent.combo_density, agent.mu, agent.std, agent.std_pred_test = utilities.compute_combo(agent.subset, grid, map, gpr.kernel_)
-                agent.std[agent.std < 0.30] = 0
+                agent.std[agent.std < 0.3] = 0
             print(f"Agent {agent.id} subset: {len(agent.subset)}")
             # ============================================================================================
 
@@ -333,17 +337,15 @@ for chunk in range(num_chunks):
                         y_start_kernel : y_start_kernel + num_kernel_dy,
                     ]
 
-            diff = utilities.normalize_mat(agent.combo_density) - (agent.coverage_density / (param.nbAgents * t + 1))
-            # diff = utilities.normalize_mat(agent.combo_density) - utilities.normalize_mat(agent.coverage_density)
+            # diff = utilities.normalize_mat(agent.combo_density) - (agent.coverage_density / (param.nbAgents * t + 1))
+            diff = utilities.normalize_mat(agent.combo_density) - utilities.normalize_mat(agent.coverage_density)
 
             # source = agent.combo_density * np.exp(-agent.coverage_density) # Eq. 13 - Source term
             source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
             source = np.where(map == 0, source, 0)
             _em_diff = np.sum(source/np.linalg.norm(source)) * param.dx * param.dx
-            
+
             agent.source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
-            # _em_diff = agent.source / np.linalg.norm(agent.source)
-            # _em_diff = utilities.min_max_normalize(agent.source)
 
             ergodic_metric[t, agent.id] = _em_diff
             
@@ -359,25 +361,6 @@ for chunk in range(num_chunks):
                                                          param.beta,
                                                          param.local_cooling,
                                                          param.dx).astype(np.float32)
-
-            # agent.current_heat = np.zeros((param.width, param.height))
-            # agent.current_heat[1:-1, 1:-1] = param.dt * (
-            #     (
-            #         + param.alpha * utilities.offset(agent.heat, 1, 0)
-            #         + param.alpha * utilities.offset(agent.heat, -1, 0)
-            #         + param.alpha * utilities.offset(agent.heat, 0, 1)
-            #         + param.alpha * utilities.offset(agent.heat, 0, -1)
-            #         - 4.0 * utilities.offset(agent.heat, 0, 0)
-            #     )
-            #     / (param.dx * param.dx)
-            #     + param.source_strength * utilities.offset(agent.source, 0, 0)
-            #     - param.local_cooling * utilities.offset(agent.local_cooling, 0, 0)
-            #     - param.beta * utilities.offset(agent.heat, 0, 0)
-            # )  + utilities.offset(agent.heat, 0, 0)
-
-            # # Update only the inner cells
-            # agent.current_heat = np.where(map == 0, agent.current_heat, 0)
-            # agent.heat = agent.current_heat.astype(np.float32)
 
             gradient_y, gradient_x = np.gradient(agent.heat.T, 1, 1)
 
@@ -410,6 +393,8 @@ for chunk in range(num_chunks):
 
 
         # Simulations
+        for idx, agent in enumerate(agents):
+            _source_hist[:, :, t, idx] = agent.source
         # Combine the data collection in a single loop for better performance
         if param.save_data:
             for idx, agent in enumerate(agents):
@@ -420,10 +405,14 @@ for chunk in range(num_chunks):
                 _coverage_hist[:, :, t, idx] = agent.coverage_density
                 _path_hist[:, t, idx] = agent.x_hist[-1, :]
 
-filepath = os.path.join(os.getcwd(), 'time_decay_effect/')
-np.save(filepath + 'hist_decay.npy', agents[0].x_hist)
-# np.save(filepath + 'r1_distributed_hist.npy', agents[0].x_hist)
-# np.save(filepath + 'r2_distributed_heat.npy', agents[1].x_hist)
+filepath = os.path.join(os.getcwd(), 'complex_map/')
+hist_array = np.array([agent.x_hist for agent in agents])
+np.save(filepath + 'hist_array.npy', hist_array)
+np.save(filepath + 'goal_density.npy', goal_density)
+# np.save(filepath + 'map.npy', map)
+# np.save(filepath + 'coverage_density.npy', coverage_density)
+_source_hist.flush()
+# np.save(filepath + 'rergodic_metrics.npy', ergodic_metric)
 
 if param.save_data:
     if not os.path.exists(data_storage_path):
@@ -449,26 +438,15 @@ ax[1].set_aspect('equal')
 ax[0].contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
 ax[0].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
 
-collisions = []
-for t in range(param.nbDataPoints):
-    for i in range(param.nbAgents):
-        for j in range(i + 1, param.nbAgents):
-            if np.linalg.norm(agents[i].x_hist[t] - agents[j].x_hist[t]) < 0.5:
-                collisions.append((i, j))
-
-# Plot the collisions
-for i, j in collisions:
-    ax[0].plot(agents[i].x_hist[:, 0], agents[i].x_hist[:, 1], color='red', alpha=0.5)
-    ax[0].plot(agents[j].x_hist[:, 0], agents[j].x_hist[:, 1], color='blue', alpha=0.5)
-
 cmaps = ['Blues', 'Reds', 'Purples', 'Greens', 'Oranges']
 for agent in agents:
-    lines = utilities.colored_line(agent.x_hist[:, 0],
-                                    agent.x_hist[:, 1],
-                                    time_array,
-                                    ax[0],
-                                    cmap=cmaps[agent.id],
-                                    linewidth=2)
+    ax[0].plot(agent.x_hist[:, 0], agent.x_hist[:, 1], color=f'C{agent.id}', alpha=0.5, lw=2)
+    # lines = utilities.colored_line(agent.x_hist[::5, 0],
+    #                                 agent.x_hist[::5, 1],
+    #                                 time_array[::5],
+    #                                 ax[0],
+    #                                 cmap=cmaps[agent.id],
+    #                                 linewidth=2)
 # FOV
 if param.use_fov:
     for agent in agents:

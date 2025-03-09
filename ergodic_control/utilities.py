@@ -710,8 +710,8 @@ def fov_coverage_block(points, fov_array, fov_depth):
     # Define a simple Gaussian distribution around the center of the FOV
     prob = np.exp(-np.linalg.norm(points - fov_center, axis=1) / (fov_depth / 3))
 
-    # Normalize the probabilities such that at boundaries the probability is zero
-    prob = (prob - np.min(prob)) / (np.max(prob) - np.min(prob))
+    # # Normalize the probabilities such that at boundaries the probability is zero
+    # prob = (prob - np.min(prob)) / (np.max(prob) - np.min(prob))
 
     return prob
 
@@ -852,7 +852,7 @@ def generate_gmm_on_map(map, free_cells, n_gaussians, n_particles, dim, random_s
     # Generate random covariances
     covariances = []
     for _ in range(n_gaussians):
-        cov = np.diag(np.random.uniform(5, 20, size=dim))  # Restrict covariance values
+        cov = np.diag(np.random.uniform(10, 50, size=dim))  # Restrict covariance values
         covariances.append(cov)
 
     # Generate samples
@@ -913,6 +913,9 @@ def max_pooling(data, downsampling_factor, divisor_range=(2, 5)):
             
     chunk_size = n_samples // downsampling_factor
     pooled_data = []
+
+    if chunk_size ==  0:
+        return data
 
     # Iterate through chunks of data
     for i in range(0, n_samples, chunk_size):

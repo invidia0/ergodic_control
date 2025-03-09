@@ -18,6 +18,10 @@ map_name = 'simpleMap_05'
 # Load the map
 map_path = os.path.join(os.getcwd(), 'example_maps/', map_name + '.npy')
 map = np.load(map_path)
+# Create a map  with just the border
+border_map = np.ones_like(map)
+border_map[1:-1, 1:-1] = 0
+map = border_map
 # Check if the map is closed or open
 closed_map = True
 # Extend the map with 1 cell to avoid index out of bounds
@@ -69,7 +73,7 @@ x0_array = np.array([[10.5, 25],
 
 free_cells = np.array(np.where(map == 0)).T
 
-# x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
+x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
 
 for i in range(param.nbAgents):
     x0 = x0_array[i]
@@ -102,11 +106,12 @@ _, density_map = utilities.generate_gmm_on_map(map,
                                              param.nbVar,
                                              random_state=param.random_seed)
 
-means = np.array([[45, 7], [20, 45]])
-cov = np.array([[[20, 0], [0, 20]], [[20, 0], [0, 20]], [[20, 0], [0, 20]]])
-density_map = utilities.gauss_pdf(grid, means[0], cov[0]) + \
-            utilities.gauss_pdf(grid, means[1], cov[1])
+means = np.array([[40, 40], [20, 45], [8, 8]])
+cov = np.array([[[20, 0], [0, 20]], [[10, 0], [0, 10]], [[10, 0], [0, 10]]])
+density_map = utilities.gauss_pdf(grid, means[0], cov[0]) #+ \
+            # utilities.gauss_pdf(grid, means[1], cov[1]) 
                 # utilities.gauss_pdf(grid, means[2], cov[2])
+
 norm_density_map = utilities.min_max_normalize(density_map).reshape(map.shape)
 
 # Compute the area of the map
@@ -189,18 +194,6 @@ for chunk in range(num_chunks):
         local_cooling = np.zeros_like(goal_density)
         coverage = np.zeros_like(goal_density)
         for agent in agents:
-            # fov_edges_moved = utilities.rotate_and_translate(tmp, agent.x, agent.theta)
-            # fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, fov_edges_moved, occ_map, closed_map)
-            # fov_points = utilities.insidepolygon(fov_edges_clipped).astype(int)
-
-            # # Delete points outside the box
-            # fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
-            # # fov_probs = utilities.normalize_mat(fov_probs)
-
-            # agent.fov_edges = fov_edges_moved
-
-            # coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs
-
             x, y = agent.x.astype(int)
             # Don't care if hits walls cause handled in heat eq.
             x_indices, x_start_kernel, num_kernel_dx = utilities.clamp_kernel_1d(
@@ -229,6 +222,8 @@ for chunk in range(num_chunks):
         diff = utilities.normalize_mat(goal_density) - coverage # Eq. 6 - Difference between the goal density and the coverage density
         source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
         source = np.where(map == 0, source, 0)
+        _em_diff = np.sum(source/np.linalg.norm(source)) * param.dx * param.dx
+        ergodic_metric[t] = _em_diff
 
         local_cooling = utilities.normalize_mat(local_cooling) * param.area # Eq. 16 - Local cooling scaled
         source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
@@ -285,13 +280,11 @@ for chunk in range(num_chunks):
             for idx, agent in enumerate(agents):
                 _path_hist[:, t, idx] = agent.x_hist[-1, :]
 
-filepath = os.path.join(os.getcwd(), 'centralized_distributed_comparison/')
-np.save(filepath + 'goal_density.npy', goal_density)
-np.save(filepath + 'r1_hist.npy', agents[0].x_hist)
-np.save(filepath + 'r2_hist.npy', agents[1].x_hist)
-# np.save(filepath + 'I2019_s3_r4.npy', ergodic_metric)
-# np.save(filepath + 'HEDAC_s3_r1.npy', ergodic_metric)
-# Flush changes loto disk after writing
+filepath = os.path.join(os.getcwd(), 'free_env/hedac_sim3_r1/')
+hist_array = np.array([agent.x_hist for agent in agents])
+np.save(filepath + 'hist_array.npy', hist_array)
+np.save(filepath + 'ergodic_metrics.npy', ergodic_metric)
+
 if param.save_data:
     if not os.path.exists(data_storage_path):
         os.makedirs(data_storage_path)
