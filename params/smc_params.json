@@ -1,0 +1,18 @@
+{
+    "nbGaussian": 2,
+    "nbParticles": 1000,
+    "nbVarX": 2,
+    "nbVar": 2,
+    "nbResX": 100,
+    "nbResY": 100,
+    "nbAgents": 1,
+    "dx": 0.01,
+    "dy": 0.01,
+    "L_list": [1, 1],
+    "nbFct": 10,
+    "dt": 0.01,
+    "tsteps": 10000,
+    "ud": 3,
+    "xlim": [0, 1],
+    "u_norm_reg": 1e-3
+}
