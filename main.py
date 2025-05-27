@@ -1,9 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+# mpl.use('TkAgg')  # Use TkAgg backend for interactive plots
 import warnings
 from ergodic_control import models, utilities
 import json
 from scipy.signal import convolve2d
+import jax
+import jax.numpy as jnp
+
 
 import os
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -73,10 +78,12 @@ param.dt = min(
 
 agents = []
 # Fixed
+# x0_array = np.array([[9, 7],
+#                 [91, 72],
+#                 [13, 72],
+#                 [92, 12],])
 x0_array = np.array([[9, 7],
-                [91, 72],
-                [13, 72],
-                [92, 12],])
+                     [30, 30]])
 
 # Random
 # x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
@@ -88,7 +95,7 @@ for i in range(param.nbAgents):
     x0 = x0_array[i]
     theta0 = np.random.uniform(0, 2 * np.pi)
 
-    agent = models.DoubleIntegratorAgentTest(
+    agent = models.DoubleIntegratorAgent(
         x=x0,
         theta=theta0,
         max_dx=param.max_dx,
@@ -190,30 +197,6 @@ subset_hash_old = 0
 ergodic_metric = np.zeros((param.nbDataPoints, param.nbAgents))
 
 """
-Debug & animation
-"""
-# grad = 0
-# if param.save_data:
-#     data_storage_path = os.path.join(os.getcwd(), '_datastorage/')
-#     _goal_density = np.memmap(data_storage_path + "goal_density.dat", dtype=np.float64, mode='w+', shape=(map.shape[0], map.shape[1]))
-#     _goal_density[:, :] = goal_density[:, :]
-#     _goal_density.flush()
-#     _heat_hist = np.memmap(data_storage_path + "heat_hist.dat", dtype=np.float64, mode='w+', 
-#                         shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
-#     _mu_hist = np.memmap(data_storage_path + "mu_hist.dat", dtype=np.float64, mode='w+', 
-#                         shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
-#     _std_hist = np.memmap(data_storage_path + "std_hist.dat", dtype=np.float64, mode='w+', 
-#                         shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
-#     _source_hist = np.memmap(data_storage_path + "source_hist.dat", dtype=np.float64, mode='w+', 
-#                             shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
-#     _coverage_hist = np.memmap(data_storage_path + "coverage_hist.dat", dtype=np.float64, mode='w+', 
-#                                 shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
-#     _path_hist = np.memmap(data_storage_path + "path_hist.dat", dtype=np.float64, mode='w+', 
-#                             shape=(3, param.nbDataPoints, param.nbAgents))
-#     _source_hist = np.memmap("source_hist.dat", dtype=np.float64, mode='w+', 
-#                                 shape=(goal_density.shape[0], goal_density.shape[1], param.nbDataPoints, param.nbAgents))
-    
-"""
 ===============================
 Main Loop
 ===============================
@@ -258,6 +241,8 @@ num_chunks = param.nbDataPoints // chunk_size
 # ax.set_title('Initial Setup')
 # plt.legend()
 # plt.show()
+violations = []
+min_safe_range = 2
 
 for chunk in range(num_chunks):
     start_idx = chunk * chunk_size
@@ -271,6 +256,13 @@ for chunk in range(num_chunks):
         if param.nbAgents > 1 & t > 0:
             # Implement DAC + Kalman update on estimates?
             adjacency_matrix = utilities.share_samples(agents, map, param.sens_range, adjacency_matrix)
+
+        # Check if two agents are too close to each other (for plotting purposes)
+        for i, agent in enumerate(agents):
+            for j, other_agent in enumerate(agents):
+                if i != j and np.linalg.norm(agent.x - other_agent.x) <= min_safe_range:
+                    violations.append((i, j))
+                    print(f"Agents {i} and {j} are too close at step {t}")
 
         for agent in agents:
             # Collision check
@@ -351,9 +343,8 @@ for chunk in range(num_chunks):
             source = np.where(map == 0, source, 0)
             agent.source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
-            ergodic_metric[t, agent.id] = np.sum(source/np.linalg.norm(source)) * param.dx * param.dx
-            
-            agent.local_cooling = utilities.normalize_mat(agent.local_cooling) * param.area # Eq. 16 - Local cooling scaled
+            ergodic_metric[t, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
+            # agent.local_cooling = utilities.normalize_mat(agent.local_cooling) * param.area # Eq. 16 - Local cooling scaled
 
             current_heat = utilities.update_heat_optimized(
                 agent.heat,
@@ -370,6 +361,7 @@ for chunk in range(num_chunks):
 
             agent.heat = current_heat.astype(np.float32)
 
+
             gradient_y, gradient_x = np.gradient(agent.heat.T, 1, 1)
 
             gradient_x /= np.linalg.norm(gradient_x) + 1e-6
@@ -383,20 +375,29 @@ for chunk in range(num_chunks):
                 param, agent, gradient_x, gradient_y, map
             )
 
+            if len(agent.neighbors) > 0:
+                for neighbor in agent.neighbors:
+                    neighbor_agent = agents[neighbor]
+                    q_ij = np.linalg.norm(agent.x - neighbor_agent.x)**2
+                    p = 4 * (param.sens_range**2 - min_safe_range**2) * (q_ij - param.sens_range**2) * (agent.x - neighbor_agent.x) / \
+                        (q_ij - min_safe_range**2)**3
+                    # Control law, we want to move away from the neighbor
+                    agent.grad -= p
+
             # v_target and theta_target
             k_target = 1
             v_target = k_target * np.array([agent.grad[0], agent.grad[1]])
 
             theta_target = np.atan2(agent.grad[1], agent.grad[0])
 
-            agent.track_velocity_and_heading(v_target, theta_target)
+            agent.track_velocity_and_heading(v_target, theta_target, penalize_lateral=True)
 
 
 fig = plt.figure(figsize=(12, 5))
 ax = fig.add_subplot(111)
 ax.set_aspect('equal')
 # Plot the map and the ground truth goal density
-ax.contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
+ax.contourf(grid_x, grid_y, goal_density, cmap='RdPu', levels=10)
 ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
 for agent in agents:
     # Plot initial position
@@ -406,141 +407,64 @@ for agent in agents:
     # Plot the agents' current positions
     ax.scatter(agent.x_hist[-1, 0], agent.x_hist[-1, 1], c=f'C{agent.id}', s=100, marker='x', label=f'Agent {agent.id} End')
     # Plot the heading
-    ax.quiver(agent.x_hist[-1, 0], agent.x_hist[-1, 1], np.cos(agent.theta), np.sin(agent.theta), scale=2, scale_units='inches', color=f'C{agent.id}')
+    ax.quiver(agent.x_hist[-1, 0], agent.x_hist[-1, 1], np.cos(agent.x_hist[-1, 2]), np.sin(agent.x_hist[-1, 2]), scale=2, scale_units='inches', color=f'C{agent.id}')
     # Draw the FOV
-    fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
-    ax.fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color=f'C{agent.id}', alpha=0.3, label=f'FOV Agent {agent.id}')
+    # fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
+    # ax.fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color=f'C{agent.id}', alpha=0.3, label=f'FOV Agent {agent.id}')
+    # Circle the min safe range
+    circle = plt.Circle((agent.x_hist[-1, 0], agent.x_hist[-1, 1]), min_safe_range, color=f'C{agent.id}', fill=False, linestyle='--', label=f'Min Safe Range Agent {agent.id}')
+    ax.add_artist(circle)
+    # Circle the sens range
+    circle = plt.Circle((agent.x_hist[-1, 0], agent.x_hist[-1, 1]), param.sens_range, color=f'C{agent.id}', fill=False, linestyle=':', label=f'Sens Range Agent {agent.id}')
+    ax.add_artist(circle)
+
 ax.set_title('Final Agent Positions and Paths')
+# Scatter violations
+ax.scatter(
+    [agents[i].x_hist[-1, 0] for i, j in violations],
+    [agents[j].x_hist[-1, 1] for i, j in violations],
+    c='red', s=100, marker='x', label='Violations'
+)
+
 plt.legend()
-plt.show()
-        # # Simulations
-        # for idx, agent in enumerate(agents):
-        #     _source_hist[:, :, t, idx] = agent.source
-        # # Combine the data collection in a single loop for better performance
-        # if param.save_data:
-        #     for idx, agent in enumerate(agents):
-        #         _heat_hist[:, :, t, idx] = agent.heat
-        #         _mu_hist[:, :, t, idx] = agent.mu
-        #         _std_hist[:, :, t, idx] = agent.std
-        #         _source_hist[:, :, t, idx] = agent.source
-        #         _coverage_hist[:, :, t, idx] = agent.coverage_density
-        #         _path_hist[:, t, idx] = agent.x_hist[-1, :]
+plt.show(block=True)
 
-filepath = os.path.join(os.getcwd(), 'complex_map/')
-hist_array = np.array([agent.x_hist for agent in agents])
-np.save(filepath + 'hist_array.npy', hist_array)
-np.save(filepath + 'goal_density.npy', goal_density)
-# np.save(filepath + 'map.npy', map)
-# np.save(filepath + 'coverage_density.npy', coverage_density)
-_source_hist.flush()
-# np.save(filepath + 'rergodic_metrics.npy', ergodic_metric)
+# Plot the ergodic metric
+plt.figure(figsize=(10, 5))
+plt.plot(np.arange(param.nbDataPoints), ergodic_metric.sum(axis=1), label='Ergodic Metric', color='blue')
+plt.xlabel('Time Step')
+plt.ylabel('Ergodic Metric Value')
+plt.title('Ergodic Metric Over Time')
+plt.grid()
+plt.legend()
+plt.show(block=True)
 
-if param.save_data:
-    if not os.path.exists(data_storage_path):
-        os.makedirs(data_storage_path)
-
-    _heat_hist.flush()
-    _mu_hist.flush()
-    _std_hist.flush()
-    _source_hist.flush()
-    _coverage_hist.flush()
-    _path_hist.flush()
-
-plt.close("all")
-fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-time_array = np.linspace(0, param.nbDataPoints, param.nbDataPoints)
-# Plot the agents
-ax[0].cla()
-ax[1].cla()
-
-ax[0].set_aspect('equal')
-ax[1].set_aspect('equal')
-
-ax[0].contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
-ax[0].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-
-cmaps = ['Blues', 'Reds', 'Purples', 'Greens', 'Oranges']
-for agent in agents:
-    ax[0].plot(agent.x_hist[:, 0], agent.x_hist[:, 1], color=f'C{agent.id}', alpha=0.5, lw=2)
-    # lines = utilities.colored_line(agent.x_hist[::5, 0],
-    #                                 agent.x_hist[::5, 1],
-    #                                 time_array[::5],
-    #                                 ax[0],
-    #                                 cmap=cmaps[agent.id],
-    #                                 linewidth=2)
-# FOV
-if param.use_fov:
-    for agent in agents:
-        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
-        ax[0].fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color='blue', alpha=0.3)
-        # Heading
-        ax[0].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
-        ax[0].scatter(agent.x_hist[0, 0], agent.x_hist[0, 1], s=100, facecolors='none', edgecolors='green', lw=2)
-        ax[0].scatter(agent.x[0], agent.x[1], c='k', s=100, marker='o', zorder=10)
-        ax[0].quiver(agent.x[0], agent.x[1], agent.grad[0], agent.grad[1], scale = None, scale_units='inches', color='red')
-        # Plot the kernel block
-        block_min = agent.x - param.kernel_size // 2
-        block_max = agent.x + param.kernel_size // 2
-        ax[0].add_patch(plt.Rectangle(block_min, block_max[0] - block_min[0], block_max[1] - block_min[1], fill=None, edgecolor='green', lw=2))
-        ax[1].scatter(agent.x[0], agent.x[1], c='black', s=100, marker='o')
-        # Plot the heading
-        ax[1].quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale = 2, scale_units='inches')
-
-
-for i in range(param.nbAgents):
-    for j in range(i + 1, param.nbAgents):
-        if adjacency_matrix[i, j] == 1:
-            # Plot a line between the two agents
-            ax[0].plot([agents[i].x[0], agents[j].x[0]], [agents[i].x[1], agents[j].x[1]], color='orange', alpha=1, lw=2, linestyle='--')
-
-# Heat
-ax[1].contourf(grid_x, grid_y, agents[0].heat, cmap='Blues', levels=10)
-ax[1].pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-delta_quiver = 2
-grad_x = gradient_x[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_x[::delta_quiver, ::delta_quiver])
-grad_y = gradient_y[::delta_quiver, ::delta_quiver] / np.linalg.norm(gradient_y[::delta_quiver, ::delta_quiver])
-qx = np.arange(0, map.shape[0], delta_quiver)
-qy = np.arange(0, map.shape[1], delta_quiver)
-q = ax[1].quiver(qx, qy, grad_x, grad_y, scale=1, scale_units='inches')
-plt.suptitle(f'Timestep: {t}')
-plt.tight_layout()
-# plt.pause(0.0001)
-plt.show()
-
-fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-# Plot the mean, std
-ax[0].cla()
-ax[1].cla()
-ax[0].set_aspect('equal')
-ax[1].set_aspect('equal')
-ax[0].contourf(grid_x, grid_y, agents[0].mu, cmap='Blues')
-ax[1].contourf(grid_x, grid_y, agents[0].std, cmap='Reds')
-bar = plt.colorbar(ax[0].contourf(grid_x, grid_y, agents[0].mu, cmap='Blues'), ax=ax[0])
-ax[0].set_title("Mean")
-bar = plt.colorbar(ax[1].contourf(grid_x, grid_y, agents[0].std, cmap='Reds'), ax=ax[1])
-ax[1].set_title("Std")
-plt.show()
-
-fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-# Plot the coverage density and the source
-ax[0].cla()
-ax[1].cla()
-ax[0].set_aspect('equal')
-ax[1].set_aspect('equal')
-# ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens')
-bar = plt.colorbar(ax[0].contourf(grid_x, grid_y, utilities.min_max_normalize(agents[0].coverage_density), cmap='Greens'), ax=ax[0])
-ax[0].set_title("Coverage Density")
-ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges')
-bar = plt.colorbar(ax[1].contourf(grid_x, grid_y, agents[0].source, cmap='Oranges'), ax=ax[1])
-ax[1].set_title("Source")
-plt.show()
-
-fig = plt.figure(figsize=(15, 5))
-# Plot the ergodic metric over time
+# Create video of the agents moving
+import matplotlib.animation as animation
+fig = plt.figure(figsize=(12, 5))
 ax = fig.add_subplot(111)
-ax.set_title("Ergodic Metric")
-for i in range(param.nbAgents):
-    ax.plot(time_array, ergodic_metric[:, i], label=f"Agent {i}")
-ax.set_xlabel("Time")
-ax.set_ylabel("Ergodic Metric")
-plt.show()
+ax.set_aspect('equal')
+def update(frame):
+    print(f"Updating frame {frame + 1}/{param.nbDataPoints}")
+    ax.clear()
+    ax.set_aspect('equal')
+    ax.contourf(grid_x, grid_y, goal_density, cmap='RdPu', levels=10)
+    ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+    
+    for agent in agents:
+        # Plot the agents' paths
+        ax.plot(agent.x_hist[:frame+1, 0], agent.x_hist[:frame+1, 1], color=f'C{agent.id}', alpha=0.5, lw=2)
+        # Plot the agents' current positions
+        ax.scatter(agent.x_hist[frame, 0], agent.x_hist[frame, 1], c=f'C{agent.id}', s=100, marker='x', label=f'Agent {agent.id} End')
+        # Plot the heading
+        ax.quiver(agent.x_hist[frame, 0], agent.x_hist[frame, 1], np.cos(agent.x_hist[frame, 2]), np.sin(agent.x_hist[frame, 2]), scale=3, scale_units='inches', color=f'C{agent.id}')
+        # Draw the FOV
+        # fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x_hist[frame], agent.fov_edges, occ_map, closed_map=True)
+        # ax.fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color=f'C{agent.id}', alpha=0.3)
+
+    ax.set_title(f'Frame {frame + 1}')
+    
+    return ax,
+
+ani = animation.FuncAnimation(fig, update, frames=np.arange(param.nbDataPoints, step=10), repeat=False)
+ani.save('agents_simulation_2.mp4', writer='ffmpeg', fps=30)

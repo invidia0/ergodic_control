@@ -14,6 +14,7 @@ from numba import njit, prange
 from scipy.spatial import cKDTree
 from skimage.draw import line
 
+
 @njit(parallel=True, fastmath=True)
 def convolve_2d(image, kernel):
     """

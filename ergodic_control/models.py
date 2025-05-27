@@ -146,7 +146,6 @@ class SecondOrderAgentWithHeading:
             "trajectory": self.x_hist,
         }
 
-
 class DoubleIntegratorAgent:
     def __init__(
         self,
@@ -216,9 +215,9 @@ class DoubleIntegratorAgent:
         v_target_world,
         theta_target=None,
         kp_lin=1.0,
-        kp_lat=1.0,
-        kp_theta=4.0,
-        kd_theta=2.0,
+        kp_lat=0.2,
+        kp_theta=2.0,
+        kd_theta=1.0,
         penalize_lateral=True,
     ):
         """
@@ -260,185 +259,3 @@ class DoubleIntegratorAgent:
         # Apply control
         u = np.hstack([a_world, alpha])
         self.update(u)
-
-
-class DoubleIntegratorAgentTest:
-    def __init__(
-        self,
-        x,  # initial position [x, y]
-        theta=0,  # initial heading
-        max_dx=1,  # maximum velocity
-        max_ddx=0.2,  # maximum acceleration
-        max_dtheta=np.pi / 4,  # maximum angular velocity
-        max_ddtheta=np.pi / 8,  # maximum angular acceleration
-        dt=1,  # time step
-        id=0,  # agent id
-    ):
-        self.x = np.array(x, dtype=np.float64)  # Position [x, y]
-        self.v = np.array([0.0, 0.0], dtype=np.float64)  # Velocity [vx, vy]
-        self.theta = theta  # Heading angle (yaw)
-        self.omega = 0.0  # Angular velocity
-
-        self.max_dx = max_dx  # Maximum linear velocity
-        self.max_ddx = max_ddx  # Maximum linear acceleration
-        self.max_dtheta = max_dtheta  # Maximum angular velocity
-        self.max_ddtheta = max_ddtheta  # Maximum angular acceleration
-
-        self.dt = dt  # Time step
-        self.id = id  # Agent ID
-
-        self.x_hist = np.empty((0, 3))  # History of states [x, y, theta]
-
-    def update(self, u):
-        """
-        Update the agent state using control input:
-        u[0:2] - linear acceleration in world frame [ax, ay]
-        u[2]   - angular acceleration (yaw)
-        """
-        a = np.array(u[:2])
-        alpha = float(u[2])
-
-        # Clamp linear acceleration
-        norm_a = np.linalg.norm(a)
-        if norm_a > self.max_ddx:
-            a = self.max_ddx * a / norm_a
-
-        # Clamp angular acceleration
-        alpha = np.clip(alpha, -self.max_ddtheta, self.max_ddtheta)
-
-        # Update velocity and clamp
-        self.v += a * self.dt
-        speed = np.linalg.norm(self.v)
-        if speed > self.max_dx:
-            self.v = self.max_dx * self.v / speed
-
-        # Update position
-        self.x += self.v * self.dt
-
-        # Update angular velocity and clamp
-        self.omega += alpha * self.dt
-        self.omega = np.clip(self.omega, -self.max_dtheta, self.max_dtheta)
-
-        # Update heading
-        self.theta += self.omega * self.dt
-        self.theta = np.arctan2(np.sin(self.theta), np.cos(self.theta)) # Normalize angle
-
-        # Log state
-        self.x_hist = np.vstack((self.x_hist, [self.x[0], self.x[1], self.theta]))
-
-    def track_velocity_and_heading(
-        self,
-        v_target_world,
-        theta_target=None,
-        kp=3.0,
-        kp_theta=3.0,
-        kd_theta=1.0,
-    ):
-        """
-        Track desired velocity (in world frame) and optionally heading.
-
-        v_target_world: array_like, shape (2,) - desired velocity [vx, vy] in world frame
-        theta_target: float or None - desired heading (yaw), None to skip heading control
-        kp_lin: float - gain on forward velocity error
-        kp_lat: float - gain on sideways velocity suppression
-        penalize_lateral: bool - if True, suppress sideways motion
-        """
-
-        vx_d, vy_d = v_target_world
-
-        # Rotation matrix (world to body)
-        # c, s = np.cos(self.theta), np.sin(self.theta)
-        # R = np.array([[c, s], [-s, c]])
-
-        # v_body = R @ self.v
-        # v_d_body = R @ np.array([vx_d, vy_d])
-
-        # Control in world frame
-        # a_body = np.zeros(2)
-        # a_body[0] = kp_lin * (v_d_body[0] - v_body[0])  # longitudinal
-        # if penalize_lateral:
-        #     a_body[1] = -kp_lat * v_body[1]  # drive lateral to 0
-        a_world = np.zeros(2)
-        a_world[0] = kp * (vx_d - self.v[0])
-        a_world[1] = kp * (vy_d - self.v[1])
-
-        # Convert back to world frame
-        # a_world = R.T @ a_body
-
-        # Heading control (PD)
-        if theta_target is not None:
-            e_theta = np.arctan2(np.sin(theta_target - self.theta),
-                                 np.cos(theta_target - self.theta))
-            alpha = kp_theta * e_theta - kd_theta * self.omega
-        else:
-            alpha = 0.0
-
-        # Apply control
-        u = np.hstack([a_world, alpha])
-        self.update(u)
-
-class DoubleIntegratorAgent:
-    def __init__(
-        self,
-        x,  # initial position [x, y]
-        theta=0,  # initial heading
-        max_dx=1,  # maximum velocity
-        max_ddx=0.2,  # maximum acceleration
-        max_dtheta=np.pi / 4,  # maximum angular velocity
-        max_ddtheta=np.pi / 8,  # maximum angular acceleration
-        dt=1,  # time step
-        id=0,  # agent id
-    ):
-        self.x = np.array(x, dtype=np.float64)  # Position [x, y]
-        self.v = np.array([0.0, 0.0], dtype=np.float64)  # Velocity [vx, vy]
-        self.theta = theta  # Heading angle
-        self.max_dx = max_dx
-        self.max_ddx = max_ddx
-        self.max_dtheta = max_dtheta
-        self.max_ddtheta = max_ddtheta
-        self.omega = 0.0  # Angular velocity
-        self.dt = dt
-        self.id = id
-        self.x_hist = np.empty((0, 3))  # History of states [x, y, theta]
-
-    def update(self, u):
-        """
-        Update the state of the agent given the control input.
-
-        Parameters:
-        u: np.ndarray
-            Control input [u_x, u_y, u_theta] (accelerations in body frame)
-        """
-        # Split control input into linear and angular components
-        linear_u = u[:2]  # [u_x, u_y]
-        angular_u = u[2]  # u_theta
-
-        # Clamp linear and angular accelerations to maximum limits
-        linear_u = np.clip(linear_u, -self.max_ddx, self.max_ddx)
-        angular_u = np.clip(angular_u, -self.max_ddtheta, self.max_ddtheta)
-
-        # # Update linear velocity in the global frame
-        self.v += linear_u * self.dt
-        # self.v += linear_u * self.dt
-        speed = np.linalg.norm(self.v)
-
-        # Clamp linear velocity to maximum speed
-        if speed > self.max_dx:
-            self.v = self.v / speed * self.max_dx
-
-        # Update position
-        self.x += self.v * self.dt
-
-        # Update angular velocity
-        self.omega += angular_u * self.dt
-        self.omega = np.clip(self.omega, -self.max_dtheta, self.max_dtheta)
-
-        # Update heading angle
-        self.theta += self.omega * self.dt
-
-        # Keep heading within [-pi, pi]
-        self.theta = (self.theta + np.pi) % (2 * np.pi) - np.pi
-
-        # Save state history
-        self.x_hist = np.vstack((self.x_hist, np.array([self.x[0], self.x[1], self.theta])))
-        
