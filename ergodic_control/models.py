@@ -215,7 +215,7 @@ class DoubleIntegratorAgent:
         v_target_world,
         theta_target=None,
         kp_lin=1.0,
-        kp_lat=0.2,
+        kp_lat=0.1,
         kp_theta=2.0,
         kd_theta=1.0,
         penalize_lateral=True,

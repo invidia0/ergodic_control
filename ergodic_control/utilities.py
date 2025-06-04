@@ -13,7 +13,7 @@ import sklearn.gaussian_process.kernels as kernels
 from numba import njit, prange
 from scipy.spatial import cKDTree
 from skimage.draw import line
-
+from scipy.spatial.distance import cdist
 
 @njit(parallel=True, fastmath=True)
 def convolve_2d(image, kernel):
@@ -972,11 +972,15 @@ def rbf_white_kernel(X1: np.ndarray,
         K += np.exp(-0.5 * np.sum((X1 / lengthscale) ** 2, axis=1))
     return K
 
-# @jit(nopython=True)
+
 def gp_predict(X_train: np.ndarray, 
                 y_train: np.ndarray, 
                 X_test: np.ndarray, 
-                kernel: kernels.Kernel):
+                kernel: kernels.Kernel,
+                D: np.ndarray,
+                T: np.ndarray,
+                d: np.ndarray,
+                t: np.ndarray):
     """
     Optimized GP prediction function with optional covariance or standard deviation.
 
@@ -993,7 +997,7 @@ def gp_predict(X_train: np.ndarray,
         std: Predicted standard deviation (n_test,).
     """
     # Compute the training kernel matrix
-    K = kernel(X_train) + np.eye(X_train.shape[0]) * 1e-10
+    K = kernel(X_train) * D * T + np.eye(X_train.shape[0]) * 1e-8  # Add small noise for numerical stability
     L = cholesky(K, lower=True, check_finite=False)
 
     # Compute alpha = (L.T @ L)^-1 @ y_train_normalized
@@ -1001,7 +1005,7 @@ def gp_predict(X_train: np.ndarray,
     alpha = solve_triangular(L.T, alpha, lower=False)
 
     # Kernel between training and test points
-    K_s = kernel(X_train, X_test)
+    K_s = kernel(X_train, X_test) * d * t  # Cross-covariance between train and test
     # Mean prediction
     mu = K_s.T @ alpha
 
@@ -1020,6 +1024,64 @@ def gp_predict(X_train: np.ndarray,
     std = np.sqrt(var)
 
     return mu, std
+
+
+def gp_tv_predict(
+    X_train: np.ndarray,
+    T_train: np.ndarray, 
+    y_train: np.ndarray, 
+    X_test: np.ndarray,
+    T_test: np.ndarray, 
+    kernel: kernels.Kernel
+):
+    """
+    Gaussian Process prediction for spatiotemporal data.
+
+    Args:
+        X_train: (n_train, d_spatial)
+        T_train: (n_train,) or (n_train, 1)
+        y_train: (n_train,)
+        X_test: (n_test, d_spatial)
+        T_test: (n_test,) or (n_test, 1)
+        kernel: A scikit-learn kernel object
+
+    Returns:
+        mu: (n_test,) predicted mean
+        std: (n_test,) predicted standard deviation
+    """
+    # Ensure T is 2D
+    T_train = T_train.reshape(-1, 1) if T_train.ndim == 1 else T_train
+    T_test = T_test.reshape(-1, 1) if T_test.ndim == 1 else T_test
+
+    # Combine space and time
+    ST_train = np.hstack([X_train, T_train])  # (n_train, d+1)
+    ST_test = np.hstack([X_test, T_test])     # (n_test, d+1)
+
+    # Compute kernel matrix for training data
+    K = kernel(ST_train) + np.eye(ST_train.shape[0]) * 1e-10
+
+    # Cholesky decomposition
+    L = cholesky(K, lower=True, check_finite=False)
+
+    # Solve for alpha
+    alpha = solve_triangular(L, y_train, lower=True)
+    alpha = solve_triangular(L.T, alpha, lower=False)
+
+    # Cross-kernel between train and test
+    K_s = kernel(ST_train, ST_test)  # shape (n_train, n_test)
+
+    # Predictive mean
+    mu = K_s.T @ alpha  # shape (n_test,)
+
+    # Predictive variance
+    V = solve_triangular(L, K_s, lower=True, check_finite=False)
+    K_ss = kernel.diag(ST_test)
+    var = K_ss - np.einsum("ij,ij->j", V, V)
+    var = np.maximum(var, 0)
+    std = np.sqrt(var)
+
+    return mu, std
+
 
 @njit(fastmath=True, cache=True)
 def apply_decay(
@@ -1054,24 +1116,65 @@ def apply_decay(
                 # Apply decay to the density grid
                 density_grid[x_coord, y_coord] += decay_factor * prob_value
 
-def compute_combo(
-    subset: np.ndarray,
-    grid: np.ndarray,
+
+def compute_combo_tv(
+    X_train: np.ndarray,
+    T_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    T_test: np.ndarray,
     map: np.ndarray,
-    kernel: kernels.Kernel,
+    kernel: kernels.Kernel
 ):
-    mu, std = gp_predict(subset[:, :2], subset[:, 2], grid, kernel)
+    mu, std = gp_tv_predict(
+        X_train,
+        T_train,
+        y_train,
+        X_test,
+        T_test,
+        kernel
+    )
 
     mu = min_max_normalize(mu.reshape(map.shape))
     std = min_max_normalize(std.reshape(map.shape))
 
-    _std_cp = np.copy(std)
-
     combo = (np.exp(mu)-1) + (np.exp(std) - 1)
-    # combo = 10**mu + 10**std
+    
     combo_density = np.where(map == 0, combo, 0) # Only keep the density on free cells
 
-    return combo_density, mu, std, _std_cp
+    return combo_density, mu, std
+
+def compute_combo(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    map: np.ndarray,
+    kernel: kernels.Kernel,
+    D: np.ndarray,
+    T: np.ndarray,
+    d: np.ndarray,
+    t: np.ndarray
+):
+    mu, std = gp_predict(
+        X_train,
+        y_train,
+        X_test,
+        kernel,
+        D,
+        T,
+        d,
+        t
+    )
+
+    mu = min_max_normalize(mu.reshape(map.shape))
+    std = min_max_normalize(std.reshape(map.shape))
+
+    combo = (np.exp(mu)-1) + (np.exp(std) - 1)
+    
+    combo_density = np.where(map == 0, combo, 0) # Only keep the density on free cells
+
+    return combo_density, mu, std
+
 
 def check_wall_between_agents(agent1, agent2, map):
     x1, y1 = agent1.x.astype(int)
@@ -1084,6 +1187,7 @@ def check_wall_between_agents(agent1, agent2, map):
     if np.any(map[rr, cc] == 1):  # Assuming 1 represents a wall
         return True  # Wall found
     return False  # No wall found
+
 
 def check_connectivity(agents, map, connectivity_r):
     positions = np.array([agent.x for agent in agents])
@@ -1102,6 +1206,7 @@ def check_connectivity(agents, map, connectivity_r):
             if neighbor not in agent.neighbors
         ]
 
+
 def share_samples(agents, map, connectivity_r, adjacency_matrix):
     check_connectivity(agents, map, connectivity_r)
     adjacency_matrix = np.eye(len(agents))
@@ -1115,3 +1220,64 @@ def share_samples(agents, map, connectivity_r, adjacency_matrix):
             agent.subset = np.unique(np.vstack([agent.subset, all_samples]), axis=0)
 
     return adjacency_matrix
+
+
+def compute_spatio_decay_matrix(spatial_data: np.ndarray, spatial_decay: float) -> np.ndarray:
+    """
+    Spatial decay matrix for train-train data.
+    Args:
+        spatial_data: (N, d) spatial coordinates of training samples.
+        spatial_decay: spatial decay length scale (lambda_s).
+    Returns:
+        (N, N) decay matrix.
+    """
+    norms = np.linalg.norm(spatial_data, axis=1)
+    D = (1-spatial_decay)**(np.abs(norms[:, None] - norms))
+    d = ((1-spatial_decay)**(np.linalg.norm(spatial_data - spatial_data[-1], axis=1))).reshape(-1, 1)
+    return D, d
+
+def compute_temporal_decay_matrix(temporal_data: np.ndarray, t_actual: np.float16, time_decay: float) -> np.ndarray:
+    """
+    Temporal decay matrix for train-train data.
+    Args:
+        temporal_data: (N,) time stamps of training samples.
+        time_decay: temporal decay length scale (lambda_t).
+    Returns:
+        (N, N) decay matrix.
+    """
+    # t = np.exp(-tau_decay * (t_actual - times)).reshape(-1)
+    # Sort data to ensure last element is the most recent
+    # temporal_data = np.sort(temporal_data)
+    t = (1 - time_decay) ** np.abs(t_actual - temporal_data)
+    t = t.reshape(-1)
+    T = np.array([[t[i] * t[j] if i != j else 1 for j in range(len(temporal_data))] for i in range(len(temporal_data))])
+    t = t.reshape(-1, 1)
+    return T, t
+
+
+def compute_spatio_decay_vector(spatial_test: np.ndarray, ref_point: np.ndarray, spatial_decay: float) -> np.ndarray:
+    """
+    Spatial decay vector for test-test data.
+    Args:
+        spatial_test: (M, d) spatial coordinates of test samples.
+        ref_point: (d,) reference spatial position (e.g., current agent position).
+        spatial_decay: spatial decay length scale.
+    Returns:
+        (M,) spatial decay vector.
+    """
+    sq_dists = np.sum((spatial_test - ref_point[None, :]) ** 2, axis=1)
+    return np.exp(-sq_dists / (2 * spatial_decay**2))
+
+
+def compute_temporal_decay_vector(temporal_test: np.ndarray, ref_time: float, time_decay: float) -> np.ndarray:
+    """
+    Temporal decay vector for test-test data.
+    Args:
+        temporal_test: (M,) time stamps of test samples.
+        ref_time: scalar, reference time (e.g., current time).
+        time_decay: temporal decay length scale.
+    Returns:
+        (M,) temporal decay vector.
+    """
+    sq_diffs = (temporal_test - ref_time) ** 2
+    return np.exp(-sq_diffs / (2 * time_decay**2))

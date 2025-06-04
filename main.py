@@ -1,19 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-# mpl.use('TkAgg')  # Use TkAgg backend for interactive plots
-import warnings
 from ergodic_control import models, utilities
 import json
-from scipy.signal import convolve2d
-import jax
-import jax.numpy as jnp
-
 
 import os
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
+import warnings
 warnings.filterwarnings("ignore")
+import time
 
 """
 Load the map
@@ -77,19 +73,16 @@ param.dt = min(
 )
 
 agents = []
+
 # Fixed
-# x0_array = np.array([[9, 7],
-#                 [91, 72],
-#                 [13, 72],
-#                 [92, 12],])
 x0_array = np.array([[9, 7],
-                     [30, 30]])
+                     [30, 30],
+                     [12, 15]])
 
 # Random
 # x0_array = free_cells[np.random.choice(free_cells.shape[0], param.nbAgents, replace=False)]
 
 print(f"Initial positions: {x0_array}")
-
 
 for i in range(param.nbAgents):
     x0 = x0_array[i]
@@ -138,15 +131,8 @@ goal_density = np.zeros_like(map)
 goal_density[free_cells[:, 0], free_cells[:, 1]] = norm_density_map[free_cells[:, 0], free_cells[:, 1]]
 # Min-max normalize the goal density
 goal_density = np.abs(goal_density)
-goal_density = utilities.normalize_mat(goal_density)
-
-# fig = plt.figure(figsize=(12, 5))
-# ax = fig.add_subplot(111)
-# ax.set_aspect('equal')
-# ax.set_title('Goal Density')
-# ax.contourf(grid_x, grid_y, goal_density, cmap='Blues')
-# ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-# plt.show()
+goal_density = utilities.min_max_normalize(goal_density) # remember to normalize
+goal_density_norm = utilities.normalize_mat(goal_density)
 
 """
 ===============================
@@ -170,44 +156,61 @@ coverage_block = utilities.agent_block(param.nbVar, param.min_kernel_val, param.
 param.kernel_size = coverage_block.shape[0]
 
 """
-===============================
-Gaussian process and decay
-===============================
+================
+Gaussian process
+================
 """
-# For the moment, no noise is added to the kernel
-noise = 0.001
-kernel = C(1.0) * RBF(1.0) + WhiteKernel(1e-5)
-gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=3, normalize_y=False)
-pooled_dataset = np.empty((0, 3))
-subset = np.empty((0, 3))
+# # For the moment, no noise is added to the kernel
+noise = 0.005
+# kernel = C(1.0, (1e-3, 1e3)) * RBF(length_scale=1.0, length_scale_bounds=(1e-5, 1e5)) # + WhiteKernel(noise_level=noise, noise_level_bounds=(1e-5, 1e1))
+# gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10, normalize_y=False, alpha=1e-5)
+# # subset = np.empty((0, 3))
 
-coverage_density_hist = np.zeros((15, 2, param.nbDataPoints), dtype=int)
-coverage_density_prob_hist = np.zeros((15, param.nbDataPoints), dtype=float)
+# std_pred_test = np.zeros_like(goal_density)
 
-std_pred_test = np.zeros_like(goal_density)
+kernel = (
+    C(1.0, constant_value_bounds=(1e-3, 1e3))
+    * RBF(length_scale=1.0, length_scale_bounds=(1e-3, 1e3))  # space
+    + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-5, 1e1))
+)
 
-# Precompute the GPR for faster simulations
-preSamplesN = 500
-preSamples = np.random.randint(0, len(free_cells), preSamplesN)
-preSamples = np.hstack((free_cells[preSamples], goal_density[free_cells[preSamples][:, 0], free_cells[preSamples][:, 1]].reshape(-1, 1)))
-preSamples = np.unique(preSamples, axis=0, return_index=False)
+gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10, alpha=1e-5, normalize_y=False)
 
-gpr.fit(preSamples[:, :2], preSamples[:, 2])
-subset_hash_old = 0
-ergodic_metric = np.zeros((param.nbDataPoints, param.nbAgents))
+gpr.kernel_ = kernel
+# # Precompute the GPR for faster simulations
+# preSamplesN = 500
+# preSamples = np.random.randint(0, len(free_cells), preSamplesN)
+# preSamples = np.hstack((free_cells[preSamples], goal_density[free_cells[preSamples][:, 0], free_cells[preSamples][:, 1]].reshape(-1, 1)))
+# preSamples = np.unique(preSamples, axis=0, return_index=False)
+
+# gpr.fit(preSamples[:, :2], preSamples[:, 2])
+
+# mu, std = gpr.predict(grid, return_std=True)
+
+# fig = plt.figure(figsize=(12, 5))
+# ax = fig.add_subplot(131)
+# ax.set_aspect('equal')
+# # Plot the mean
+# ax.contourf(grid_x, grid_y, mu.reshape(map.shape), cmap='RdPu', levels=10)
+# ax = fig.add_subplot(132)
+# ax.set_aspect('equal')
+# # Plot the std
+# ax.contourf(grid_x, grid_y, std.reshape(map.shape), cmap='binary', levels=10)
+# ax = fig.add_subplot(133)
+# ax.set_aspect('equal')
+# # Plot the goal density
+# ax.contourf(grid_x, grid_y, goal_density, cmap='RdPu', levels=10)
+# plt.show(block=True)
 
 """
-===============================
+=========
 Main Loop
-===============================
+=========
 """
 for agent in agents:
-    agent.last_heading = agent.theta
-    agent.last_position = agent.x
     agent.heat = np.empty_like(goal_density)
-    agent.samples = np.empty((0, 3))
-    agent.pooled_dataset = np.empty((0, 3))
-    agent.subset = np.empty((0, 3))
+    agent.samples = np.empty((0, 4))
+    agent.subset = np.empty((0, 4))
     agent.coverage_density_hist = np.zeros((50, 2, param.nbDataPoints), dtype=int)
     agent.coverage_density_prob_hist = np.zeros((50, param.nbDataPoints), dtype=float)
 
@@ -215,11 +218,9 @@ for agent in agents:
     agent.last_neighbors = []
     agent.local_cooling = np.zeros_like(goal_density)
     agent.coverage_density = np.zeros_like(goal_density)
-    # agent.local_cooling = {}
-    # agent.angular_error = 0
 
     # Stack the precomputed samples
-    agent.subset = np.vstack((agent.subset, preSamples))
+    # agent.subset = np.vstack((agent.subset, preSamples))
 
 adjacency_matrix = np.eye(param.nbAgents)
 
@@ -227,42 +228,36 @@ adjacency_matrix = np.eye(param.nbAgents)
 chunk_size = param.nbDataPoints // 10
 num_chunks = param.nbDataPoints // chunk_size
 
-# fig = plt.figure(figsize=(12, 5))
-# # Initialize the history arrays
-# ax = fig.add_subplot(111)
-# ax.set_aspect('equal')
-# # Plot the map and the ground truth goal density
-# ax.contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
-# ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-# # Plot the agents' initial positions
-# for agent in agents:
-#     ax.scatter(agent.x[0], agent.x[1], c=f'C{agent.id}', s=100, marker='o', label=f'Agent {agent.id}')
-#     ax.quiver(agent.x[0], agent.x[1], np.cos(agent.theta), np.sin(agent.theta), scale=2, scale_units='inches')
-# ax.set_title('Initial Setup')
-# plt.legend()
-# plt.show()
 violations = []
-min_safe_range = 2
+min_safe_range = 1
+
+plt.close('all')  # Close all previous plots
+fig = plt.figure(figsize=(12, 5))
+ax = fig.add_subplot(111)
+
+spatial_decay = 1e-5
+temporal_decay = 1e-4
+# Start time
 
 for chunk in range(num_chunks):
     start_idx = chunk * chunk_size
     end_idx = min((chunk + 1) * chunk_size, param.nbDataPoints)
     print(f"Processing chunk {chunk + 1}/{num_chunks} (steps {start_idx} to {end_idx})")
         
-    for t in range(start_idx, end_idx):
-        if t // 10:
-            print(f"Step - {t}")
+    for step in range(start_idx, end_idx):
+        if step // 10:
+            print(f"Step - {step}")
 
-        if param.nbAgents > 1 & t > 0:
+        if param.nbAgents > 1 & step > 0:
             # Implement DAC + Kalman update on estimates?
             adjacency_matrix = utilities.share_samples(agents, map, param.sens_range, adjacency_matrix)
 
-        # Check if two agents are too close to each other (for plotting purposes)
+        # Check if two agents are too close to each other (just for DEBUG)
         for i, agent in enumerate(agents):
             for j, other_agent in enumerate(agents):
                 if i != j and np.linalg.norm(agent.x - other_agent.x) <= min_safe_range:
                     violations.append((i, j))
-                    print(f"Agents {i} and {j} are too close at step {t}")
+                    print(f"Agents {i} and {j} are too close at step {step}")
 
         for agent in agents:
             # Collision check
@@ -274,7 +269,7 @@ for chunk in range(num_chunks):
                 ax.contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
                 ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
                 ax.scatter(agent.x[0], agent.x[1], c='red', s=100, marker='x', label=f'Agent {agent.id} Collision')
-                ax.set_title(f"Agent {agent.id} collided with an obstacle at step {t}")
+                ax.set_title(f"Agent {agent.id} collided with an obstacle at step {step}")
                 plt.legend()
                 plt.show()
                 raise ValueError("Agent collided with an obstacle")
@@ -293,58 +288,96 @@ for chunk in range(num_chunks):
             agent.fov_edges = fov_edges_moved
 
             """ Goal density sampling """
-            samples = np.hstack((fov_points, (goal_density[fov_points[:, 0], fov_points[:, 1]] + np.random.normal(0, noise, len(fov_points))).reshape(-1, 1)))
-            agent.samples = np.vstack((agent.samples, samples))
+            y = goal_density[fov_points[:, 0], fov_points[:, 1]]  # + np.random.normal(0, noise, len(fov_points))
+            # dataset = np.hstack((fov_points, step * np.ones((fov_points.shape[0], 1), dtype=int).reshape(-1, 1), y.reshape(-1, 1)))
+            dataset = np.hstack((fov_points, time.time() * np.ones((fov_points.shape[0], 1), dtype=int).reshape(-1, 1), y.reshape(-1, 1)))
+
+            agent.samples = np.vstack((agent.samples, dataset))
+            # Sort the subset by time
+            agent.subset = agent.subset[np.argsort(agent.subset[:, 2])]
 
             # Mantovani et al. 2024 ======================================================================
-            if t > 0:
-                std_test = agent.std_pred_test[agent.samples[:, 0].astype(int), agent.samples[:, 1].astype(int)]
+            if step > 0:
+                std_test = agent.std[agent.samples[:, 0].astype(int), agent.samples[:, 1].astype(int)]
                 agent.samples = agent.samples[np.where(std_test > 0.75)[0]]
 
                 if len(agent.samples) != 0:
-                    agent.subset = np.unique(np.vstack((agent.subset, utilities.max_pooling(agent.samples, 5))), axis=0, return_index=False)
+                    pooled_samples = utilities.max_pooling(agent.samples, 5)
 
-                    # gpr.fit(agent.subset[:, :2], agent.subset[:, 2]) # Skipping for simulation speed
+                    agent.subset = np.vstack((agent.subset, pooled_samples))
+                    agent.subset = np.unique(agent.subset, axis=0, return_index=False)
 
-                    agent.combo_density, agent.mu, agent.std, agent.std_pred_test = utilities.compute_combo(agent.subset, grid, map, gpr.kernel_)
-                agent.std[agent.std < 0.3] = 0
+                    gpr.fit(agent.subset[:, :2], agent.subset[:, 3])
+
+                # Compute the decay matrix based on the spatial distance
+                D, d = utilities.compute_spatio_decay_matrix(
+                    agent.subset[:, :2],
+                    spatial_decay
+                )
+
+                T, t = utilities.compute_temporal_decay_matrix(
+                    agent.subset[:, 2],
+                    time.time(),
+                    temporal_decay
+                )
+
+                agent.combo_density, agent.mu, agent.std = utilities.compute_combo(
+                                                                                agent.subset[:, :2],
+                                                                                agent.subset[:, 3],
+                                                                                grid,
+                                                                                map,
+                                                                                gpr.kernel_,
+                                                                                D,
+                                                                                T,
+                                                                                d,
+                                                                                t
+                                                                                )
+                agent.std[agent.std < 0.3] = 0 # Clear too low std values
             else:
-                agent.subset = np.unique(np.vstack((agent.subset, utilities.max_pooling(agent.samples, 5))), axis=0, return_index=False)
-                agent.combo_density, agent.mu, agent.std, agent.std_pred_test = utilities.compute_combo(agent.subset, grid, map, gpr.kernel_)
-                agent.std[agent.std < 0.3] = 0
+                # agent.subset = np.unique(np.vstack((agent.subset, utilities.max_pooling(agent.samples, 5))), axis=0, return_index=False)
+                pooled_samples = utilities.max_pooling(agent.samples, 5)
+
+                agent.subset = np.vstack((agent.subset, pooled_samples))
+                agent.subset = np.unique(agent.subset, axis=0, return_index=False)
+
+                D, d = utilities.compute_spatio_decay_matrix(
+                    agent.subset[:, :2],
+                    spatial_decay
+                )
+
+                T, t = utilities.compute_temporal_decay_matrix(
+                    agent.subset[:, 2],
+                    time.time(),
+                    temporal_decay
+                )
+
+                agent.combo_density, agent.mu, agent.std = utilities.compute_combo(
+                                                                                agent.subset[:, :2],
+                                                                                agent.subset[:, 3],
+                                                                                grid,
+                                                                                map,
+                                                                                gpr.kernel_,
+                                                                                D,
+                                                                                T,
+                                                                                d,
+                                                                                t
+                                                                                )
+            
+                agent.std[agent.std < 0.3] = 0 # Clear too low std values
             print(f"Agent {agent.id} subset: {len(agent.subset)}")
             # ============================================================================================
 
-            if t == 0:
+            if step == 0:
                 agent.heat = np.array(utilities.normalize_mat(agent.combo_density))
 
-            # if agent.neighbors:
-            #     print(f"Agent {agent.id} has neighbors: {agent.neighbors}")
-            #     """ Agent block # SKIP FOR THE MOMENT!! """
-            #     for neighbor_id in agent.neighbors:
-            #         adjusted_position = agents[neighbor_id].x
-            #         x, y = adjusted_position.astype(int)
-
-            #         x_indices, x_start_kernel, num_kernel_dx = utilities.clamp_kernel_1d(
-            #             x, 0, param.width, param.kernel_size
-            #         )
-            #         y_indices, y_start_kernel, num_kernel_dy = utilities.clamp_kernel_1d(
-            #             y, 0, param.height, param.kernel_size
-            #         )
-
-            #         agent.local_cooling[x_indices, y_indices] += coverage_block[
-            #             x_start_kernel : x_start_kernel + num_kernel_dx,
-            #             y_start_kernel : y_start_kernel + num_kernel_dy,
-            #         ]
-
-            diff = goal_density - utilities.normalize_mat(agent.coverage_density)
+            diff = utilities.normalize_mat(agent.combo_density) - utilities.normalize_mat(agent.coverage_density)
+            # diff = goal_density - utilities.normalize_mat(agent.coverage_density)
 
             source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
             source = np.where(map == 0, source, 0)
             agent.source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
-            ergodic_metric[t, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
-            # agent.local_cooling = utilities.normalize_mat(agent.local_cooling) * param.area # Eq. 16 - Local cooling scaled
+            # ergodic_metric[step, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
 
             current_heat = utilities.update_heat_optimized(
                 agent.heat,
@@ -361,15 +394,11 @@ for chunk in range(num_chunks):
 
             agent.heat = current_heat.astype(np.float32)
 
-
             gradient_y, gradient_x = np.gradient(agent.heat.T, 1, 1)
 
             gradient_x /= np.linalg.norm(gradient_x) + 1e-6
             gradient_y /= np.linalg.norm(gradient_y) + 1e-6
 
-            # Store the last position and heading
-            agent.last_heading = agent.theta
-            agent.last_position = agent.x
             # Update the agent
             agent.grad = utilities.calculate_gradient_map(
                 param, agent, gradient_x, gradient_y, map
@@ -391,6 +420,18 @@ for chunk in range(num_chunks):
             theta_target = np.atan2(agent.grad[1], agent.grad[0])
 
             agent.track_velocity_and_heading(v_target, theta_target, penalize_lateral=True)
+
+            # ax.clear()
+            # ax.set_aspect('equal')
+            # # Plot the map and the ground truth goal density
+            # ax.contourf(grid_x, grid_y, agent.std, cmap='RdPu', levels=10)
+            # ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+            # # Plot the agent position and fov
+            # ax.scatter(agent.x[0], agent.x[1], c=f'C{agent.id}', s=100, marker='o', label=f'Agent {agent.id} Start')
+            # # Plot the FOV
+            # fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
+            # ax.fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color=f'C{agent.id}', alpha=0.3, label=f'FOV Agent {agent.id}')
+            # plt.pause(0.01)
 
 
 fig = plt.figure(figsize=(12, 5))
@@ -429,14 +470,36 @@ ax.scatter(
 plt.legend()
 plt.show(block=True)
 
-# Plot the ergodic metric
-plt.figure(figsize=(10, 5))
-plt.plot(np.arange(param.nbDataPoints), ergodic_metric.sum(axis=1), label='Ergodic Metric', color='blue')
-plt.xlabel('Time Step')
-plt.ylabel('Ergodic Metric Value')
-plt.title('Ergodic Metric Over Time')
-plt.grid()
-plt.legend()
+# # Plot the ergodic metric
+# plt.figure(figsize=(10, 5))
+# plt.plot(np.arange(param.nbDataPoints), ergodic_metric.sum(axis=1), label='Ergodic Metric', color='blue')
+# plt.xlabel('Time Step')
+# plt.ylabel('Ergodic Metric Value')
+# plt.title('Ergodic Metric Over Time')
+# plt.grid()
+# plt.legend()
+# plt.show(block=True)
+
+# Plot mean and uncertainty of the GPR predictions
+fig = plt.figure(figsize=(12, 5))
+ax = fig.add_subplot(131)
+ax.set_aspect('equal')
+ax.contourf(grid_x, grid_y, goal_density, cmap='RdPu', levels=10)
+ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+ax.set_title('Ground Truth Goal Density')
+
+ax = fig.add_subplot(132)
+ax.set_aspect('equal')
+ax.contourf(grid_x, grid_y, agents[0].mu.reshape(map.shape), cmap='RdPu', levels=10)
+ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+ax.set_title('GPR Mean Prediction')
+
+ax = fig.add_subplot(133)
+ax.set_aspect('equal')
+ax.contourf(grid_x, grid_y, agents[0].std.reshape(map.shape), cmap='RdPu', levels=10)
+ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+ax.set_title('GPR Uncertainty (Std Dev)')
+
 plt.show(block=True)
 
 # Create video of the agents moving
@@ -467,4 +530,5 @@ def update(frame):
     return ax,
 
 ani = animation.FuncAnimation(fig, update, frames=np.arange(param.nbDataPoints, step=10), repeat=False)
-ani.save('agents_simulation_2.mp4', writer='ffmpeg', fps=30)
+date = np.datetime64('now').astype(str).replace(':', '-').replace(' ', '_')
+ani.save('agents_simulation_' + date + '.mp4', writer='ffmpeg', fps=30)
