@@ -117,7 +117,7 @@ _, density_map = utilities.generate_gmm_on_map(map,
 # means = np.array([[40, 40], [20, 45], [8, 8]])
 # cov = np.array([[[20, 0], [0, 20]], [[10, 0], [0, 10]], [[10, 0], [0, 10]]])
 # density_map = utilities.gauss_pdf(grid, means[0], cov[0]) #+ \
-#             # utilities.gauss_pdf(grid, means[1], cov[1]) 
+#             # utilities.gauss_pdf(grid, means[1], cov[1])
 #                 # utilities.gauss_pdf(grid, means[2], cov[2])
 
 # norm_density_map = utilities.min_max_normalize(density_map).reshape(map.shape)
@@ -142,7 +142,7 @@ Initialize heat equation related parameters
 param.width = map.shape[0]
 param.height = map.shape[1]
 
-param.beta = param.beta / param.area # Eq. 17 - Beta normalized 
+param.beta = param.beta / param.area # Eq. 17 - Beta normalized
 param.local_cooling = param.local_cooling / param.area # Eq. 16 - Local cooling normalized
 
 local_cooling = np.zeros_like(goal_density) # The local cooling
@@ -235,203 +235,158 @@ plt.close('all')  # Close all previous plots
 fig = plt.figure(figsize=(12, 5))
 ax = fig.add_subplot(111)
 
-spatial_decay = 1e-5
-temporal_decay = 1e-4
+spatial_decay = 1000
+temporal_decay = 1000
 # Start time
 
-for chunk in range(num_chunks):
-    start_idx = chunk * chunk_size
-    end_idx = min((chunk + 1) * chunk_size, param.nbDataPoints)
-    print(f"Processing chunk {chunk + 1}/{num_chunks} (steps {start_idx} to {end_idx})")
-        
-    for step in range(start_idx, end_idx):
-        if step // 10:
-            print(f"Step - {step}")
+for step in range(param.nbDataPoints):
+    if step // 10:
+        print(f"Step - {step}")
 
-        if param.nbAgents > 1 & step > 0:
-            # Implement DAC + Kalman update on estimates?
-            adjacency_matrix = utilities.share_samples(agents, map, param.sens_range, adjacency_matrix)
+    if param.nbAgents > 1 & step > 0:
+        # Implement DAC + Kalman update on estimates?
+        adjacency_matrix = utilities.share_samples(agents, map, param.sens_range, adjacency_matrix)
 
-        # Check if two agents are too close to each other (just for DEBUG)
-        for i, agent in enumerate(agents):
-            for j, other_agent in enumerate(agents):
-                if i != j and np.linalg.norm(agent.x - other_agent.x) <= min_safe_range:
-                    violations.append((i, j))
-                    print(f"Agents {i} and {j} are too close at step {step}")
+    # Check if two agents are too close to each other (just for DEBUG)
+    for i, agent in enumerate(agents):
+        for j, other_agent in enumerate(agents):
+            if i != j and np.linalg.norm(agent.x - other_agent.x) <= min_safe_range:
+                violations.append((i, j))
+                print(f"Agents {i} and {j} are too close at step {step}")
 
-        for agent in agents:
-            # Collision check
-            if map[agent.x[0].astype(int), agent.x[1].astype(int)] == 1:
-                print(f"Agent {agent.id} collided with an obstacle")
-                fig = plt.figure(figsize=(12, 5))
-                ax = fig.add_subplot(111)
-                ax.set_aspect('equal')
-                ax.contourf(grid_x, grid_y, goal_density, cmap='Greys', levels=10)
-                ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-                ax.scatter(agent.x[0], agent.x[1], c='red', s=100, marker='x', label=f'Agent {agent.id} Collision')
-                ax.set_title(f"Agent {agent.id} collided with an obstacle at step {step}")
-                plt.legend()
-                plt.show()
-                raise ValueError("Agent collided with an obstacle")
+    for agent in agents:
+        # Collision check
+        if map[agent.x[0].astype(int), agent.x[1].astype(int)] == 1:
+            print(f"Agent {agent.id} collided with an obstacle")
+            raise ValueError("Agent collided with an obstacle")
 
-            agent.local_cooling = np.zeros_like(goal_density)
+        agent.local_cooling = np.zeros_like(goal_density)
 
-            fov_edges_moved = utilities.rotate_and_translate(tmp, agent.x, agent.theta)
-            fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, fov_edges_moved, occ_map, closed_map)
-            fov_points = utilities.insidepolygon(fov_edges_clipped).astype(int)
+        fov_edges_moved = utilities.rotate_and_translate(tmp, agent.x, agent.theta)
+        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, fov_edges_moved, occ_map, closed_map)
+        fov_points = utilities.insidepolygon(fov_edges_clipped).astype(int)
 
-            # Delete points outside the box
-            fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
+        # Delete points outside the box
+        fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, param.fov_depth)
 
-            agent.coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs
-            
-            agent.fov_edges = fov_edges_moved
+        agent.coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs
 
-            """ Goal density sampling """
-            y = goal_density[fov_points[:, 0], fov_points[:, 1]]  # + np.random.normal(0, noise, len(fov_points))
-            # dataset = np.hstack((fov_points, step * np.ones((fov_points.shape[0], 1), dtype=int).reshape(-1, 1), y.reshape(-1, 1)))
-            dataset = np.hstack((fov_points, time.time() * np.ones((fov_points.shape[0], 1), dtype=int).reshape(-1, 1), y.reshape(-1, 1)))
+        agent.fov_edges = fov_edges_moved
 
-            agent.samples = np.vstack((agent.samples, dataset))
-            # Sort the subset by time
+        """ Goal density sampling """
+        y = goal_density[fov_points[:, 0], fov_points[:, 1]]  # + np.random.normal(0, noise, len(fov_points))
+        dataset = np.hstack((fov_points, time.time() * np.ones((fov_points.shape[0], 1), dtype=int).reshape(-1, 1), y.reshape(-1, 1)))
+
+        agent.samples = np.vstack((agent.samples, dataset))
+        agent.subset = agent.subset[np.argsort(agent.subset[:, 2])]
+
+        # Mantovani et al. 2024 ======================================================================
+        if step > 0:
+            # Filter samples based on standard deviation threshold
+            std_test = agent.std[agent.samples[:, 0].astype(int), agent.samples[:, 1].astype(int)]
+            agent.samples = agent.samples[std_test > 0.75]
+
+        # Only proceed if there are samples to process
+        if len(agent.samples) != 0:
+            pooled_samples = utilities.max_pooling(agent.samples, 5)
+            agent.subset = np.unique(np.vstack((agent.subset, pooled_samples)), axis=0)
+
+            if step > 0:
+                gpr.fit(agent.subset[:, :2], agent.subset[:, 3])
+
+        # Compute decay matrices
+        D, d = utilities.compute_spatio_decay_matrix(agent.subset[:, :2], spatial_decay, agent.x)
+        T, t = utilities.compute_temporal_decay_matrix(agent.subset[:, 2], time.time(), temporal_decay)
+
+        # Compute combo density and update agent state
+        agent.combo_density, agent.mu, agent.std = utilities.compute_combo(
+            agent.subset[:, :2],
+            agent.subset[:, 3],
+            grid,
+            map,
+            gpr.kernel_,
+            D,
+            T,
+            d,
+            t
+        )
+
+        # Clear low standard deviation values
+        # agent.std[agent.std < 0.3] = 0
+
+        print(f"Agent {agent.id} subset: {len(agent.subset)}")
+        # Pratissoli et al. 2025 =====================================================================
+        if step > 0:
+            # Keep only the samples with uncertainty low enough
+            std_test = agent.std[agent.subset[:, 0].astype(int), agent.subset[:, 1].astype(int)]
+            agent.subset = agent.subset[std_test < 0.75]
             agent.subset = agent.subset[np.argsort(agent.subset[:, 2])]
 
-            # Mantovani et al. 2024 ======================================================================
-            if step > 0:
-                std_test = agent.std[agent.samples[:, 0].astype(int), agent.samples[:, 1].astype(int)]
-                agent.samples = agent.samples[np.where(std_test > 0.75)[0]]
 
-                if len(agent.samples) != 0:
-                    pooled_samples = utilities.max_pooling(agent.samples, 5)
+        if step == 0:
+            agent.heat = np.array(utilities.normalize_mat(agent.combo_density))
 
-                    agent.subset = np.vstack((agent.subset, pooled_samples))
-                    agent.subset = np.unique(agent.subset, axis=0, return_index=False)
+        diff = utilities.normalize_mat(agent.combo_density) - utilities.normalize_mat(agent.coverage_density)
 
-                    gpr.fit(agent.subset[:, :2], agent.subset[:, 3])
+        source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
+        source = np.where(map == 0, source, 0)
+        agent.source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
 
-                # Compute the decay matrix based on the spatial distance
-                D, d = utilities.compute_spatio_decay_matrix(
-                    agent.subset[:, :2],
-                    spatial_decay
-                )
+        # ergodic_metric[step, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
 
-                T, t = utilities.compute_temporal_decay_matrix(
-                    agent.subset[:, 2],
-                    time.time(),
-                    temporal_decay
-                )
+        current_heat = utilities.update_heat_optimized(
+            agent.heat,
+            agent.source,
+            map,
+            agent.local_cooling,
+            param.dt,
+            param.alpha,
+            param.source_strength,
+            param.beta,
+            param.local_cooling,
+            param.dx
+        )
 
-                agent.combo_density, agent.mu, agent.std = utilities.compute_combo(
-                                                                                agent.subset[:, :2],
-                                                                                agent.subset[:, 3],
-                                                                                grid,
-                                                                                map,
-                                                                                gpr.kernel_,
-                                                                                D,
-                                                                                T,
-                                                                                d,
-                                                                                t
-                                                                                )
-                agent.std[agent.std < 0.3] = 0 # Clear too low std values
-            else:
-                # agent.subset = np.unique(np.vstack((agent.subset, utilities.max_pooling(agent.samples, 5))), axis=0, return_index=False)
-                pooled_samples = utilities.max_pooling(agent.samples, 5)
+        agent.heat = current_heat.astype(np.float32)
 
-                agent.subset = np.vstack((agent.subset, pooled_samples))
-                agent.subset = np.unique(agent.subset, axis=0, return_index=False)
+        gradient_y, gradient_x = np.gradient(agent.heat.T, 1, 1)
 
-                D, d = utilities.compute_spatio_decay_matrix(
-                    agent.subset[:, :2],
-                    spatial_decay
-                )
+        gradient_x /= np.linalg.norm(gradient_x) + 1e-6
+        gradient_y /= np.linalg.norm(gradient_y) + 1e-6
 
-                T, t = utilities.compute_temporal_decay_matrix(
-                    agent.subset[:, 2],
-                    time.time(),
-                    temporal_decay
-                )
+        # Update the agent
+        agent.grad = utilities.calculate_gradient_map(
+            param, agent, gradient_x, gradient_y, map
+        )
 
-                agent.combo_density, agent.mu, agent.std = utilities.compute_combo(
-                                                                                agent.subset[:, :2],
-                                                                                agent.subset[:, 3],
-                                                                                grid,
-                                                                                map,
-                                                                                gpr.kernel_,
-                                                                                D,
-                                                                                T,
-                                                                                d,
-                                                                                t
-                                                                                )
-            
-                agent.std[agent.std < 0.3] = 0 # Clear too low std values
-            print(f"Agent {agent.id} subset: {len(agent.subset)}")
-            # ============================================================================================
+        if len(agent.neighbors) > 0:
+            for neighbor in agent.neighbors:
+                neighbor_agent = agents[neighbor]
+                q_ij = np.linalg.norm(agent.x - neighbor_agent.x)**2
+                p = 4 * (param.sens_range**2 - min_safe_range**2) * (q_ij - param.sens_range**2) * (agent.x - neighbor_agent.x) / \
+                    (q_ij - min_safe_range**2)**3
+                # Control law, we want to move away from the neighbor
+                agent.grad -= p
 
-            if step == 0:
-                agent.heat = np.array(utilities.normalize_mat(agent.combo_density))
+        # v_target and theta_target
+        k_target = 1
+        v_target = k_target * np.array([agent.grad[0], agent.grad[1]])
 
-            diff = utilities.normalize_mat(agent.combo_density) - utilities.normalize_mat(agent.coverage_density)
-            # diff = goal_density - utilities.normalize_mat(agent.coverage_density)
+        theta_target = np.atan2(agent.grad[1], agent.grad[0])
 
-            source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
-            source = np.where(map == 0, source, 0)
-            agent.source = utilities.normalize_mat(source) * param.area # Eq. 14 - Source term scaled
+        agent.track_velocity_and_heading(v_target, theta_target, penalize_lateral=True)
 
-            # ergodic_metric[step, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
-
-            current_heat = utilities.update_heat_optimized(
-                agent.heat,
-                agent.source,
-                map,
-                agent.local_cooling,
-                param.dt,
-                param.alpha,
-                param.source_strength,
-                param.beta,
-                param.local_cooling,
-                param.dx
-            )
-
-            agent.heat = current_heat.astype(np.float32)
-
-            gradient_y, gradient_x = np.gradient(agent.heat.T, 1, 1)
-
-            gradient_x /= np.linalg.norm(gradient_x) + 1e-6
-            gradient_y /= np.linalg.norm(gradient_y) + 1e-6
-
-            # Update the agent
-            agent.grad = utilities.calculate_gradient_map(
-                param, agent, gradient_x, gradient_y, map
-            )
-
-            if len(agent.neighbors) > 0:
-                for neighbor in agent.neighbors:
-                    neighbor_agent = agents[neighbor]
-                    q_ij = np.linalg.norm(agent.x - neighbor_agent.x)**2
-                    p = 4 * (param.sens_range**2 - min_safe_range**2) * (q_ij - param.sens_range**2) * (agent.x - neighbor_agent.x) / \
-                        (q_ij - min_safe_range**2)**3
-                    # Control law, we want to move away from the neighbor
-                    agent.grad -= p
-
-            # v_target and theta_target
-            k_target = 1
-            v_target = k_target * np.array([agent.grad[0], agent.grad[1]])
-
-            theta_target = np.atan2(agent.grad[1], agent.grad[0])
-
-            agent.track_velocity_and_heading(v_target, theta_target, penalize_lateral=True)
-
-            # ax.clear()
-            # ax.set_aspect('equal')
-            # # Plot the map and the ground truth goal density
-            # ax.contourf(grid_x, grid_y, agent.std, cmap='RdPu', levels=10)
-            # ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-            # # Plot the agent position and fov
-            # ax.scatter(agent.x[0], agent.x[1], c=f'C{agent.id}', s=100, marker='o', label=f'Agent {agent.id} Start')
-            # # Plot the FOV
-            # fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
-            # ax.fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color=f'C{agent.id}', alpha=0.3, label=f'FOV Agent {agent.id}')
-            # plt.pause(0.01)
+        ax.clear()
+        ax.set_aspect('equal')
+        # Plot the map and the ground truth goal density
+        ax.contourf(grid_x, grid_y, agent.std, cmap='RdPu', levels=10)
+        ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
+        # Plot the agent position and fov
+        ax.scatter(agent.x[0], agent.x[1], c=f'C{agent.id}', s=100, marker='o', label=f'Agent {agent.id} Start')
+        # Plot the FOV
+        fov_edges_clipped = utilities.clip_polygon_no_convex(agent.x, agent.fov_edges, occ_map, closed_map=True)
+        ax.fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color=f'C{agent.id}', alpha=0.3, label=f'FOV Agent {agent.id}')
+        plt.pause(0.01)
 
 
 fig = plt.figure(figsize=(12, 5))
@@ -513,7 +468,7 @@ def update(frame):
     ax.set_aspect('equal')
     ax.contourf(grid_x, grid_y, goal_density, cmap='RdPu', levels=10)
     ax.pcolormesh(grid_x, grid_y, np.where(map == 0, np.nan, map), cmap='gray')
-    
+
     for agent in agents:
         # Plot the agents' paths
         ax.plot(agent.x_hist[:frame+1, 0], agent.x_hist[:frame+1, 1], color=f'C{agent.id}', alpha=0.5, lw=2)
@@ -526,7 +481,7 @@ def update(frame):
         # ax.fill(fov_edges_clipped[:, 0], fov_edges_clipped[:, 1], color=f'C{agent.id}', alpha=0.3)
 
     ax.set_title(f'Frame {frame + 1}')
-    
+
     return ax,
 
 ani = animation.FuncAnimation(fig, update, frames=np.arange(param.nbDataPoints, step=10), repeat=False)

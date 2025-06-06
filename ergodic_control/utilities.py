@@ -1222,37 +1222,54 @@ def share_samples(agents, map, connectivity_r, adjacency_matrix):
     return adjacency_matrix
 
 
-def compute_spatio_decay_matrix(spatial_data: np.ndarray, spatial_decay: float) -> np.ndarray:
+def compute_spatio_decay_matrix(spatial_data: np.ndarray, spatial_decay: float, ref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Spatial decay matrix for train-train data.
+    Compute spatial decay matrix and decay vector for GP spatial aging mechanism.
+    
     Args:
-        spatial_data: (N, d) spatial coordinates of training samples.
-        spatial_decay: spatial decay length scale (lambda_s).
+        spatial_data: (N, d) array of spatial positions.
+        spatial_decay: spatial decay length scale λ_s (float, > 0).
+    
     Returns:
-        (N, N) decay matrix.
+        D: (N, N) spatial decay matrix where D[i, j] = exp(-‖x_i - x_j‖ / λ_s)
+        d: (N, 1) decay vector where d[i] = exp(-‖x_i - x_ref‖ / λ_s)
     """
-    norms = np.linalg.norm(spatial_data, axis=1)
-    D = (1-spatial_decay)**(np.abs(norms[:, None] - norms))
-    d = ((1-spatial_decay)**(np.linalg.norm(spatial_data - spatial_data[-1], axis=1))).reshape(-1, 1)
+    from scipy.spatial.distance import cdist
+
+    # Pairwise Euclidean distances
+    dists = cdist(spatial_data, spatial_data, metric='euclidean')
+    D = np.exp(-dists / spatial_decay)
+
+    # Use last sample as reference (for cross-covariance weighting)
+    ref = spatial_data[-1]
+    d_single = cdist(spatial_data, ref.reshape(-1, 2), metric='euclidean')
+    d = np.exp(-d_single / spatial_decay)
+
     return D, d
 
-def compute_temporal_decay_matrix(temporal_data: np.ndarray, t_actual: np.float16, time_decay: float) -> np.ndarray:
+
+def compute_temporal_decay_matrix(temporal_data: np.ndarray, t_actual: float, time_decay: float) -> tuple[np.ndarray, np.ndarray]:
     """
-    Temporal decay matrix for train-train data.
+    Compute temporal decay matrix and decay vector for GP aging mechanism.
+    
     Args:
-        temporal_data: (N,) time stamps of training samples.
-        time_decay: temporal decay length scale (lambda_t).
+        temporal_data: (N,) array of time stamps of training samples.
+        t_actual: current time (float).
+        time_decay: temporal decay length scale λ (float, > 0).
+    
     Returns:
-        (N, N) decay matrix.
+        T: (N, N) decay matrix where T[i, j] = t[i] * t[j].
+        t: (N, 1) decay vector where t[i] = exp(-(t_actual - t_i) / λ).
     """
-    # t = np.exp(-tau_decay * (t_actual - times)).reshape(-1)
-    # Sort data to ensure last element is the most recent
-    # temporal_data = np.sort(temporal_data)
-    t = (1 - time_decay) ** np.abs(t_actual - temporal_data)
-    t = t.reshape(-1)
-    T = np.array([[t[i] * t[j] if i != j else 1 for j in range(len(temporal_data))] for i in range(len(temporal_data))])
-    t = t.reshape(-1, 1)
+    # Compute decay of each sample from current time (recency-based)
+    delta = t_actual - temporal_data
+    assert np.all(delta >= 0), "All sample timestamps should be ≤ t_actual."
+
+    t = np.exp(-delta / time_decay).reshape(-1, 1)
+    T = t @ t.T  # Outer product to get symmetric decay matrix
+
     return T, t
+
 
 
 def compute_spatio_decay_vector(spatial_test: np.ndarray, ref_point: np.ndarray, spatial_decay: float) -> np.ndarray:
