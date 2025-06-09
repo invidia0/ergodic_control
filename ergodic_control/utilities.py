@@ -14,6 +14,7 @@ from numba import njit, prange
 from scipy.spatial import cKDTree
 from skimage.draw import line
 from scipy.spatial.distance import cdist
+from typing import Tuple
 
 @njit(parallel=True, fastmath=True)
 def convolve_2d(image, kernel):
@@ -1222,7 +1223,7 @@ def share_samples(agents, map, connectivity_r, adjacency_matrix):
     return adjacency_matrix
 
 
-def compute_spatio_decay_matrix(spatial_data: np.ndarray, spatial_decay: float, ref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def compute_spatio_decay_matrix(spatial_data: np.ndarray, spatial_decay: float, ref: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute spatial decay matrix and decay vector for GP spatial aging mechanism.
     
@@ -1248,7 +1249,7 @@ def compute_spatio_decay_matrix(spatial_data: np.ndarray, spatial_decay: float, 
     return D, d
 
 
-def compute_temporal_decay_matrix(temporal_data: np.ndarray, t_actual: float, time_decay: float) -> tuple[np.ndarray, np.ndarray]:
+def compute_temporal_decay_matrix(temporal_data: np.ndarray, t_actual: float, time_decay: float) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute temporal decay matrix and decay vector for GP aging mechanism.
     

@@ -372,7 +372,7 @@ for step in range(param.nbDataPoints):
         k_target = 1
         v_target = k_target * np.array([agent.grad[0], agent.grad[1]])
 
-        theta_target = np.atan2(agent.grad[1], agent.grad[0])
+        theta_target = np.arctan2(agent.grad[1], agent.grad[0])
 
         agent.track_velocity_and_heading(v_target, theta_target, penalize_lateral=True)
 
