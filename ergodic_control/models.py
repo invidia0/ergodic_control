@@ -259,3 +259,53 @@ class DoubleIntegratorAgent:
         # Apply control
         u = np.hstack([a_world, alpha])
         self.update(u)
+
+    def get_acceleration(
+        self,
+        v_target_world,
+        theta_target=None,
+        kp_lin=1.0,
+        kp_lat=0.1,
+        kp_theta=2.0,
+        kd_theta=1.0,
+        penalize_lateral=True,
+    ):
+        """
+        Track desired velocity (in world frame) and optionally heading.
+
+        v_target_world: array_like, shape (2,) - desired velocity [vx, vy] in world frame
+        theta_target: float or None - desired heading (yaw), None to skip heading control
+        kp_lin: float - gain on forward velocity error
+        kp_lat: float - gain on sideways velocity suppression
+        penalize_lateral: bool - if True, suppress sideways motion
+        """
+
+        vx_d, vy_d = v_target_world
+
+        # Rotation matrix (world to body)
+        c, s = np.cos(self.theta), np.sin(self.theta)
+        R = np.array([[c, s], [-s, c]])
+
+        v_body = R @ self.v
+        v_d_body = R @ np.array([vx_d, vy_d])
+
+        # Control in body frame
+        a_body = np.zeros(2)
+        a_body[0] = kp_lin * (v_d_body[0] - v_body[0])  # longitudinal
+        if penalize_lateral:
+            a_body[1] = -kp_lat * v_body[1]  # drive lateral to 0
+
+        # Convert back to world frame
+        a_world = R.T @ a_body
+
+        # Heading control (PD)
+        if theta_target is not None:
+            e_theta = np.arctan2(np.sin(theta_target - self.theta),
+                                 np.cos(theta_target - self.theta))
+            alpha = kp_theta * e_theta - kd_theta * self.omega
+        else:
+            alpha = 0.0
+
+        # return control
+        u = np.hstack([a_world, alpha])
+        return u

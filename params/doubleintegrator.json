@@ -3,7 +3,8 @@
     "dx": 0.5,
     "dt": 1,
     "dt_agent": 0.1,
-    "nbAgents": 1,
+    "nbAgents": 2,
+    "ids": [0, 1],
     "alpha": 1.0,
     "beta": 1,
     "local_cooling": 1,
@@ -23,7 +24,7 @@
     "decay": 0,
     "max_dtheta": 2,
     "max_ddtheta": 1.0,
-    "nbDataPoints": 10000,
+    "nbDataPoints": 2000,
     "use_fov": true,
     "boundary_gradient": 1e-6
   }

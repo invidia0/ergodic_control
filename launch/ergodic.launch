@@ -1,0 +1,13 @@
+<launch>
+
+    <arg name="id" default="1" />
+    <arg name="name" default="uav$(arg id)" />
+    <arg name="altitude" default="7.0" />
+
+    <group ns="$(arg name)">
+    <node name="ergodic_node" type="ergodic_node.py" pkg="ergodic_control" output="screen">
+        <param name="robot_id" value="$(arg id)" />
+    </node>
+    </group>
+
+</launch>

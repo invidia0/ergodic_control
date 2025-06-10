@@ -9,6 +9,7 @@ project(ergodic_control)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   mavros
+  mavros_msgs
   roscpp
   rospy
   tf
@@ -152,9 +153,9 @@ include_directories(
 #   ${catkin_LIBRARIES}
 # )
 
-add_executable(ergodic_node src/ergodic_node.cpp)
-add_dependencies(ergodic_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(ergodic_node ${catkin_LIBRARIES})
+# add_executable(ergodic_node src/ergodic_node.cpp)
+# add_dependencies(ergodic_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+# target_link_libraries(ergodic_node ${catkin_LIBRARIES})
 
 #############
 ## Install ##
