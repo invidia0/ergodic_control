@@ -110,6 +110,7 @@ class ErgodicNode():
         self.robot_id = rospy.get_param("~robot_id", 0)
         self.altitude = rospy.get_param("~takeoff_altitude", 10.0)
         self.takeoff_time = rospy.get_param("~takeoff_time", 10.0)
+        self.save_video = rospy.get_param("~save_video", False)
         env_id = os.getenv("UAV_ID")
         if env_id is not None:
             try:
@@ -171,16 +172,32 @@ class ErgodicNode():
             self.map_cb
         )
 
-        self.map_msg = OccupancyGrid()
-        self.map_msg.header.frame_id = "map"
-        self.map_msg.info.resolution = self.param.dx
-        self.map_msg.info.width = self.map.shape[0]
-        self.map_msg.info.height = self.map.shape[1]
-        self.map_msg.info.origin.position.x = 0.0
-        self.map_msg.info.origin.position.y = 0.0
-        self.map_msg.info.origin.position.z = 0.0
-        self.map_msg.info.origin.orientation.w = 1.0
-        self.map_msg.data = (self.map.flatten() * 100).astype(int).tolist() 
+        self.goal_density_pub = rospy.Publisher(
+            "goal_density",
+            OccupancyGrid,
+            queue_size=10
+        )
+
+        self.mean_pred_pub = rospy.Publisher(
+            "mean_prediction",
+            OccupancyGrid,
+            queue_size=10
+        )
+
+        # self.map_msg = OccupancyGrid()
+        # self.map_msg.header.frame_id = "map"
+        # self.map_msg.info.resolution = 1
+        # self.map_msg.info.width = self.map.shape[1]
+        # self.map_msg.info.height = self.map.shape[0]
+        # self.map_msg.info.origin.position.x = self.map.shape[1]
+        # self.map_msg.info.origin.position.y = 0.0  # In ROS, the origin is at the bottom left corner
+        # self.map_msg.info.origin.position.z = 0.0
+        # # rotate 90 degrees
+        # self.map_msg.info.origin.orientation.x = 0.0
+        # self.map_msg.info.origin.orientation.y = 0.0
+        # self.map_msg.info.origin.orientation.z = 0.707  # sin(45 degrees)
+        # self.map_msg.info.origin.orientation.w = 0.707
+        # self.map_msg.data = (np.flipud(self.map).flatten(order='C') * 100).astype(int).tolist() 
 
         # velocity publisher
         self.vel_pub = rospy.Publisher(
@@ -431,8 +448,9 @@ class ErgodicNode():
         if self.landing_client.call(land_cmd).success:
             rospy.loginfo(f"UAV {self.robot_id} landed successfully.")
         
-        print("Plotting results...")
-        self.plot_results()
+        if self.save_video:
+            print("Plotting results...")
+            self.plot_results()
 
         
         # self.local_pos_pub.unregister()
@@ -477,9 +495,29 @@ class ErgodicNode():
         self.agents[i].x_hist = np.vstack((self.agents[i].x_hist, xyth))
 
     def map_cb(self, event):
-        self.map_msg.header.stamp = rospy.Time.now()
-        self.map_pub.publish(self.map_msg)
-    
+        self.publish_map(self.map, self.map_pub)
+        self.publish_map(self.goal_density, self.goal_density_pub)
+        for agent in self.agents:
+            if agent is not None and hasattr(agent, "mu"):
+                map_data = agent.mu.reshape(self.map.shape)
+                self.publish_map(map_data, self.mean_pred_pub)
+
+    def publish_map(self, map_data, pub):
+        map_msg = OccupancyGrid()
+        map_msg.header.frame_id = "map"
+        map_msg.info.resolution = 1
+        map_msg.info.width = map_data.shape[1]
+        map_msg.info.height = map_data.shape[0]
+        map_msg.info.origin.position.x = map_data.shape[1]
+        map_msg.info.origin.position.y = 0.0 
+        map_msg.info.origin.position.z = 0.0
+        map_msg.info.origin.orientation.x = 0.0
+        map_msg.info.origin.orientation.y = 0.0
+        map_msg.info.origin.orientation.z = 0.707
+        map_msg.info.origin.orientation.w = 0.707
+        map_msg.data = (np.flipud(map_data).flatten(order='C') * 100).astype(int).tolist() 
+        pub.publish(map_msg)
+
     def timer_cb(self, event):
         offb_set_mode = SetModeRequest()
         offb_set_mode.custom_mode = "OFFBOARD"
