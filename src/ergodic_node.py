@@ -508,7 +508,7 @@ class ErgodicNode():
         map_msg.info.resolution = 1
         map_msg.info.width = map_data.shape[1]
         map_msg.info.height = map_data.shape[0]
-        map_msg.info.origin.position.x = map_data.shape[1]
+        map_msg.info.origin.position.x = map_data.shape[0]
         map_msg.info.origin.position.y = 0.0 
         map_msg.info.origin.position.z = 0.0
         map_msg.info.origin.orientation.x = 0.0
@@ -661,18 +661,25 @@ class ErgodicNode():
 
             theta_target = np.arctan2(self.agents[self.id].grad[1], self.agents[self.id].grad[0])
 
-            # self.agents[self.id].get_acceleration(v_target, theta_target, penalize_lateral=True)
+            u = self.agents[self.id].get_acceleration(v_target, theta_target, penalize_lateral=True)
+            self.agents[self.id].update(u)
+
+            # get linear and angular velocities
+            vel = self.agents[self.id].v
+            omega = self.agents[self.id].omega
 
             # convert to ROS message
             msg = TwistStamped()
             msg.header.stamp = rospy.Time.now()
             msg.header.frame_id = "map"
-            msg.twist.linear.x = v_target[0]
-            msg.twist.linear.y = v_target[1]
+            msg.twist.linear.x = vel[0]
+            msg.twist.linear.y = vel[1]
             msg.twist.linear.z = 0.0
-            msg.twist.angular.z = theta_target
+            msg.twist.angular.z = omega
             self.vel_pub.publish(msg)
             
+
+
             rospy.sleep(self.param.dt)
             self.step += 1
 
