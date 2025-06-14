@@ -496,7 +496,8 @@ class ErgodicNode():
 
     def map_cb(self, event):
         self.publish_map(self.map, self.map_pub)
-        self.publish_map(self.goal_density, self.goal_density_pub)
+        if hasattr(self, 'goal_density'):
+            self.publish_map(self.goal_density, self.goal_density_pub)
         for agent in self.agents:
             if agent is not None and hasattr(agent, "mu"):
                 map_data = agent.mu.reshape(self.map.shape)

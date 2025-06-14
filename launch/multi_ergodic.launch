@@ -1,0 +1,23 @@
+<launch>
+
+    <arg name="altitude" default="7.0" />
+    <arg name="save_video" default="false" />
+
+    <group ns="uav0">
+    <node name="ergodic_node" type="ergodic_node.py" pkg="ergodic_control" output="screen">
+        <param name="robot_id" value="0" />
+        <param name="save_video" value="$(arg save_video)" />
+        <param name="takeoff_altitude" value="$(arg altitude)" />
+    </node>
+    </group>
+
+
+    <group ns="uav1">
+    <node name="ergodic_node" type="ergodic_node.py" pkg="ergodic_control" output="screen">
+        <param name="robot_id" value="1" />
+        <param name="save_video" value="$(arg save_video)" />
+        <param name="takeoff_altitude" value="$(arg altitude)" />
+    </node>
+    </group>
+
+</launch>
