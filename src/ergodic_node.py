@@ -45,7 +45,7 @@ class ErgodicNode():
         Load map
         ===============================
         """
-        map_name = 'simpleMap_05'
+        map_name = 'simpleMap_1'
         map_path = os.path.join(pkg_path,  'example_maps/', map_name + '.npy')
         self.map = np.load(map_path)
         free_cells = np.array(np.where(self.map == 0)).T
@@ -92,8 +92,8 @@ class ErgodicNode():
 
         self.agents = [None] * self.param.nbAgents
 
-        self.spatial_decay = 1000
-        self.temporal_decay = 1000
+        self.spatial_decay = 1e6
+        self.temporal_decay = 1e6
         self.min_safe_range = 1.0  # Minimum safe distance between agents
         
 
@@ -309,6 +309,23 @@ class ErgodicNode():
             self.agents[i].coverage_density = np.zeros_like(self.goal_density)
         print("All agents initialized.")
 
+        for i in range(5):
+            print(f"Step {i+1}/5: Initializing heat...") 
+            current_heat = utilities.update_heat_optimized(
+                self.agents[self.id].heat,
+                np.ones_like(self.agents[self.id].heat),
+                self.map,
+                np.ones_like(self.agents[self.id].heat),
+                self.param.dt,
+                self.param.alpha,
+                self.param.source_strength,
+                self.param.beta,
+                self.param.local_cooling,
+                self.param.dx
+            )
+        print("Heat ready")
+
+
         """
         ===============================
         MAVROS setup
@@ -360,7 +377,7 @@ class ErgodicNode():
         
         self.last_request = rospy.Time.now()
 
-
+        self.current_altitude = None
         
         # main loop timer
         self.timer = rospy.Timer(
@@ -486,6 +503,7 @@ class ErgodicNode():
 
         # Update position and orientation
         self.agents[i].x = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y])
+        self.current_altitude = msg.pose.pose.position.z
         orientation = msg.pose.pose.orientation
         self.agents[i].theta = np.arctan2(
             2.0 * (orientation.z * orientation.w + orientation.x * orientation.y),
@@ -496,7 +514,8 @@ class ErgodicNode():
 
     def map_cb(self, event):
         self.publish_map(self.map, self.map_pub)
-        self.publish_map(self.goal_density, self.goal_density_pub)
+        if hasattr(self, "goal_density"):
+            self.publish_map(self.goal_density, self.goal_density_pub)
         for agent in self.agents:
             if agent is not None and hasattr(agent, "mu"):
                 map_data = agent.mu.reshape(self.map.shape)
@@ -542,7 +561,7 @@ class ErgodicNode():
         else:
             if self.step % 10 == 0:
                 print(f"Step {self.step}")
-            
+            print("agent in position: ", self.agents[self.id].x) 
             if self.param.nbAgents > 1 and self.step > 0:
                 self.adjacency_matrix = utilities.share_samples(self.agents, self.map, self.param.sens_range, self.adjacency_matrix)
 
@@ -612,7 +631,9 @@ class ErgodicNode():
 
             if self.step == 0:
                 self.agents[self.id].heat = np.array(utilities.normalize_mat(self.agents[self.id].combo_density))
+                print("heat initialized")
 
+            print("calculating ergodic metric...")
             diff = utilities.normalize_mat(self.agents[self.id].combo_density) - utilities.normalize_mat(self.agents[self.id].coverage_density)
 
             source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
@@ -621,6 +642,7 @@ class ErgodicNode():
 
             # ergodic_metric[step, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
 
+            print("update current heat...")
             current_heat = utilities.update_heat_optimized(
                 self.agents[self.id].heat,
                 self.agents[self.id].source,
@@ -636,15 +658,18 @@ class ErgodicNode():
 
             self.agents[self.id].heat = current_heat.astype(np.float32)
 
+            print("calculating gradient...")
             gradient_y, gradient_x = np.gradient(self.agents[self.id].heat.T, 1, 1)
 
             gradient_x /= np.linalg.norm(gradient_x) + 1e-6
             gradient_y /= np.linalg.norm(gradient_y) + 1e-6
+            print("got gradient")
 
             # Update the agent
             self.agents[self.id].grad = utilities.calculate_gradient_map(
                 self.param, self.agents[self.id], gradient_x, gradient_y, self.map
             )
+            print("updated agent")
 
             if len(self.agents[self.id].neighbors) > 0:
                 for neighbor in self.agents[self.id].neighbors:
@@ -667,6 +692,7 @@ class ErgodicNode():
             # get linear and angular velocities
             vel = self.agents[self.id].v
             omega = self.agents[self.id].omega
+            print(f"desired v, w: {vel}, {omega}")
 
             # convert to ROS message
             msg = TwistStamped()
@@ -674,7 +700,7 @@ class ErgodicNode():
             msg.header.frame_id = "map"
             msg.twist.linear.x = vel[0]
             msg.twist.linear.y = vel[1]
-            msg.twist.linear.z = 0.0
+            msg.twist.linear.z = 0.8 * (self.takeoff_pose.pose.position.z - self.current_altitude)
             msg.twist.angular.z = omega
             self.vel_pub.publish(msg)
             

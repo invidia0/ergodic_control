@@ -66,7 +66,7 @@ def offset(mat, i, j):
     return mat[1 + i : 1 + i + rows, 1 + j : 1 + j + cols]
 
 
-@njit(cache=True)
+#@njit(cache=True)
 def roll_optimized(arr, shift, axis):
     """Efficient roll implementation using slicing."""
     result = np.empty_like(arr)
@@ -86,7 +86,7 @@ def roll_optimized(arr, shift, axis):
             result[:] = arr
     return result
 
-@njit(parallel=True, cache=True, fastmath=True)
+#@njit(parallel=True, cache=True, fastmath=True)
 def update_heat_optimized(heat, source, map, local_cooling_matrix, dt, alpha, source_strength, beta, local_cooling, dx):
     # Precompute dimensions
     n, m = heat.shape
