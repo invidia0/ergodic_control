@@ -14,6 +14,8 @@ packaging
 pillow>=9.0.1
 pyparsing
 python-dateutil
+pyyaml
+rospkg
 scikit-image
 scikit-learn
 scipy
