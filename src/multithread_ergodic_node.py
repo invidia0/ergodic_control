@@ -11,6 +11,7 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKern
 import warnings
 warnings.filterwarnings("ignore")
 import time
+import threading
 
 # custom modules
 import sys
@@ -206,7 +207,6 @@ class ErgodicNode():
             queue_size=10
         )
 
-        rospy.on_shutdown(self.shutdown_hook)
 
         """
         ===============================
@@ -380,13 +380,42 @@ class ErgodicNode():
         self.current_altitude = None
         
         # main loop timer
-        self.timer = rospy.Timer(
-            rospy.Duration(self.param.dt), 
-            self.timer_cb
-        )
-        
+        # self.timer = rospy.Timer(
+        #     rospy.Duration(self.param.dt), 
+        #     self.timer_cb
+        # )
+        self.lock = threading.Lock()
+        self.sender_thread = threading.Thread(target=self.command_sender)
+        self.compute_thread = threading.Thread(target=self.computation_loop)
+        self.control_cmd = TwistStamped()
+        self.control_cmd.header.frame_id = "map"
+        self.last_cmd_time = rospy.Time.now()
+
+        self.running = True
+        self.sender_thread.start()
+        self.compute_thread.start()
+
+        rospy.on_shutdown(self.shutdown_hook)
 
         print("Initialization complete. Starting main loop...")
+
+    def command_sender(self):
+        rate = rospy.Rate(50)
+        timeout = rospy.Duration(0.1)
+        zero_cmd = TwistStamped()
+        zero_cmd.header.frame_id = "map"
+
+        while not rospy.is_shutdown() and self.running:
+            with self.lock:
+                now = rospy.Time.now()
+                if now - self.last_cmd_time < timeout:
+                    cmd = self.control_cmd
+                else:
+                    cmd = zero_cmd
+                    # print("sending zero..")
+                cmd.header.stamp = now
+            
+            self.vel_pub.publish(cmd)
 
     def plot_results(self):
         # Plot mean and uncertainty of the GPR predictions
@@ -451,8 +480,12 @@ class ErgodicNode():
 
     def shutdown_hook(self):
         rospy.loginfo("Shutting down Ergodic Node...")
-        self.timer.shutdown()
+        # self.timer.shutdown()
         self.map_timer.shutdown()
+
+        self.running = False
+        self.sender_thread.join()
+        self.compute_thread.join()
         
         # Land the vehicle
         print(f"Landing UAV {self.robot_id}...")
@@ -537,181 +570,184 @@ class ErgodicNode():
         map_msg.data = (np.flipud(map_data).flatten(order='C') * 100).astype(int).tolist() 
         pub.publish(map_msg)
 
-    def timer_cb(self, event):
-        offb_set_mode = SetModeRequest()
-        offb_set_mode.custom_mode = "OFFBOARD"
-        arm_cmd = CommandBoolRequest()
-        arm_cmd.value = True
+    def computation_loop(self):
+        while not rospy.is_shutdown() and self.running:
+            offb_set_mode = SetModeRequest()
+            offb_set_mode.custom_mode = "OFFBOARD"
+            arm_cmd = CommandBoolRequest()
+            arm_cmd.value = True
 
-        if self.mavros_state.mode != "OFFBOARD" and (rospy.Time.now() - self.last_request > rospy.Duration(2.0)):
-            if self.set_mode_client.call(offb_set_mode).mode_sent:
-                rospy.loginfo("Offboard enabled")
-            self.last_request = rospy.Time.now()
-        else:
-            if not self.mavros_state.armed and (rospy.Time.now() - self.last_request > rospy.Duration(2.0)):
-                if self.arming_client.call(arm_cmd).success:
-                    rospy.loginfo("Vehicle armed")
+            if self.mavros_state.mode != "OFFBOARD" and (rospy.Time.now() - self.last_request > rospy.Duration(2.0)):
+                if self.set_mode_client.call(offb_set_mode).mode_sent:
+                    rospy.loginfo("Offboard enabled")
                 self.last_request = rospy.Time.now()
+            else:
+                if not self.mavros_state.armed and (rospy.Time.now() - self.last_request > rospy.Duration(2.0)):
+                    if self.arming_client.call(arm_cmd).success:
+                        rospy.loginfo("Vehicle armed")
+                    self.last_request = rospy.Time.now()
 
-        if rospy.Time.now() - self.last_request < rospy.Duration(self.takeoff_time):
-            self.takeoff_pose.header.frame_id = f"uav{self.robot_id}/local_origin"
-            self.takeoff_pose.header.stamp = rospy.Time.now()
-            self.local_pos_pub.publish(self.takeoff_pose)
-            self.t_start = rospy.Time.now().to_sec()
-        else:
-            if self.step % 10 == 0:
-                print(f"Step {self.step}")
-            print("agent in position: ", self.agents[self.id].x) 
-            if self.param.nbAgents > 1 and self.step > 0:
-                self.adjacency_matrix = utilities.share_samples(self.agents, self.map, self.param.sens_range, self.adjacency_matrix)
+            if rospy.Time.now() - self.last_request < rospy.Duration(self.takeoff_time):
+                self.takeoff_pose.header.frame_id = f"uav{self.robot_id}/local_origin"
+                self.takeoff_pose.header.stamp = rospy.Time.now()
+                self.local_pos_pub.publish(self.takeoff_pose)
+                self.t_start = rospy.Time.now().to_sec()
+            else:
+                if self.step % 10 == 0:
+                    print(f"Step {self.step}")
+                print("agent in position: ", self.agents[self.id].x) 
+                if self.param.nbAgents > 1 and self.step > 0:
+                    self.adjacency_matrix = utilities.share_samples(self.agents, self.map, self.param.sens_range, self.adjacency_matrix)
 
-            self.agents[self.id].local_cooling = np.zeros_like(self.goal_density)
+                self.agents[self.id].local_cooling = np.zeros_like(self.goal_density)
 
-            tmp = utilities.init_fov(self.param.fov_deg, self.param.fov_depth)
-            fov_edges_moved = utilities.rotate_and_translate(tmp, self.agents[self.id].x, self.agents[self.id].theta)
-            fov_edges_clipped = utilities.clip_polygon_no_convex(self.agents[self.id].x, fov_edges_moved, self.occ_map, self.closed_map)
-            fov_points = utilities.insidepolygon(fov_edges_clipped).astype(int)
+                tmp = utilities.init_fov(self.param.fov_deg, self.param.fov_depth)
+                fov_edges_moved = utilities.rotate_and_translate(tmp, self.agents[self.id].x, self.agents[self.id].theta)
+                fov_edges_clipped = utilities.clip_polygon_no_convex(self.agents[self.id].x, fov_edges_moved, self.occ_map, self.closed_map)
+                fov_points = utilities.insidepolygon(fov_edges_clipped).astype(int)
 
-            # Delete points outside the box
-            fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, self.param.fov_depth)
+                # Delete points outside the box
+                fov_probs = utilities.fov_coverage_block(fov_points, fov_edges_clipped, self.param.fov_depth)
 
-            self.agents[self.id].coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs
+                self.agents[self.id].coverage_density[fov_points[:, 0], fov_points[:, 1]] += fov_probs
 
-            self.agents[self.id].fov_edges = fov_edges_moved
+                self.agents[self.id].fov_edges = fov_edges_moved
 
-            """ Goal density sampling """
-            y = self.goal_density[fov_points[:, 0], fov_points[:, 1]]  # + np.random.normal(0, noise, len(fov_points))
-            dataset = np.hstack((fov_points, time.time() * np.ones((fov_points.shape[0], 1), dtype=int).reshape(-1, 1), y.reshape(-1, 1)))
+                """ Goal density sampling """
+                y = self.goal_density[fov_points[:, 0], fov_points[:, 1]]  # + np.random.normal(0, noise, len(fov_points))
+                dataset = np.hstack((fov_points, time.time() * np.ones((fov_points.shape[0], 1), dtype=int).reshape(-1, 1), y.reshape(-1, 1)))
 
-            self.agents[self.id].samples = np.vstack((self.agents[self.id].samples, dataset))
-            self.agents[self.id].subset = self.agents[self.id].subset[np.argsort(self.agents[self.id].subset[:, 2])]
-
-            # Mantovani et al. 2024 ======================================================================
-            if self.step > 0:
-                # Filter samples based on standard deviation threshold
-                std_test = self.agents[self.id].std[self.agents[self.id].samples[:, 0].astype(int), self.agents[self.id].samples[:, 1].astype(int)]
-                self.agents[self.id].samples = self.agents[self.id].samples[std_test > 0.75]
-
-            # Only proceed if there are samples to process
-            if len(self.agents[self.id].samples) != 0:
-                pooled_samples = utilities.max_pooling(self.agents[self.id].samples, 5)
-                self.agents[self.id].subset = np.unique(np.vstack((self.agents[self.id].subset, pooled_samples)), axis=0)
-
-                if self.step > 0:
-                    self.gpr.fit(self.agents[self.id].subset[:, :2], self.agents[self.id].subset[:, 3])
-
-            # Compute decay matrices
-            D, d = utilities.compute_spatio_decay_matrix(self.agents[self.id].subset[:, :2], self.spatial_decay, self.agents[self.id].x)
-            T, t = utilities.compute_temporal_decay_matrix(self.agents[self.id].subset[:, 2], time.time(), self.temporal_decay)
-
-            # Compute combo density and update agent state
-            self.agents[self.id].combo_density, self.agents[self.id].mu, self.agents[self.id].std = utilities.compute_combo(
-                self.agents[self.id].subset[:, :2],
-                self.agents[self.id].subset[:, 3],
-                self.grid,
-                self.map,
-                self.gpr.kernel_,
-                D,
-                T,
-                d,
-                t
-            )
-
-            # Clear low standard deviation values
-            # agent.std[agent.std < 0.3] = 0
-
-            print(f"Agent {self.agents[self.id].id} subset: {len(self.agents[self.id].subset)}")
-            # Pratissoli et al. 2025 =====================================================================
-            if self.step > 0:
-                # Keep only the samples with uncertainty low enough
-                std_test = self.agents[self.id].std[self.agents[self.id].subset[:, 0].astype(int), self.agents[self.id].subset[:, 1].astype(int)]
-                self.agents[self.id].subset = self.agents[self.id].subset[std_test < 0.75]
+                self.agents[self.id].samples = np.vstack((self.agents[self.id].samples, dataset))
                 self.agents[self.id].subset = self.agents[self.id].subset[np.argsort(self.agents[self.id].subset[:, 2])]
 
+                # Mantovani et al. 2024 ======================================================================
+                if self.step > 0:
+                    # Filter samples based on standard deviation threshold
+                    std_test = self.agents[self.id].std[self.agents[self.id].samples[:, 0].astype(int), self.agents[self.id].samples[:, 1].astype(int)]
+                    self.agents[self.id].samples = self.agents[self.id].samples[std_test > 0.75]
 
-            if self.step == 0:
-                self.agents[self.id].heat = np.array(utilities.normalize_mat(self.agents[self.id].combo_density))
-                print("heat initialized")
+                # Only proceed if there are samples to process
+                if len(self.agents[self.id].samples) != 0:
+                    pooled_samples = utilities.max_pooling(self.agents[self.id].samples, 5)
+                    self.agents[self.id].subset = np.unique(np.vstack((self.agents[self.id].subset, pooled_samples)), axis=0)
 
-            print("calculating ergodic metric...")
-            diff = utilities.normalize_mat(self.agents[self.id].combo_density) - utilities.normalize_mat(self.agents[self.id].coverage_density)
+                    if self.step > 0:
+                        self.gpr.fit(self.agents[self.id].subset[:, :2], self.agents[self.id].subset[:, 3])
 
-            source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
-            source = np.where(self.map == 0, source, 0)
-            self.agents[self.id].source = utilities.normalize_mat(source) * self.param.area # Eq. 14 - Source term scaled
+                # Compute decay matrices
+                D, d = utilities.compute_spatio_decay_matrix(self.agents[self.id].subset[:, :2], self.spatial_decay, self.agents[self.id].x)
+                T, t = utilities.compute_temporal_decay_matrix(self.agents[self.id].subset[:, 2], time.time(), self.temporal_decay)
 
-            # ergodic_metric[step, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
+                # Compute combo density and update agent state
+                self.agents[self.id].combo_density, self.agents[self.id].mu, self.agents[self.id].std = utilities.compute_combo(
+                    self.agents[self.id].subset[:, :2],
+                    self.agents[self.id].subset[:, 3],
+                    self.grid,
+                    self.map,
+                    self.gpr.kernel_,
+                    D,
+                    T,
+                    d,
+                    t
+                )
 
-            print("update current heat...")
-            current_heat = utilities.update_heat_optimized(
-                self.agents[self.id].heat,
-                self.agents[self.id].source,
-                self.map,
-                self.agents[self.id].local_cooling,
-                self.param.dt,
-                self.param.alpha,
-                self.param.source_strength,
-                self.param.beta,
-                self.param.local_cooling,
-                self.param.dx
-            )
+                # Clear low standard deviation values
+                # agent.std[agent.std < 0.3] = 0
 
-            self.agents[self.id].heat = current_heat.astype(np.float32)
+                print(f"Agent {self.agents[self.id].id} subset: {len(self.agents[self.id].subset)}")
+                # Pratissoli et al. 2025 =====================================================================
+                if self.step > 0:
+                    # Keep only the samples with uncertainty low enough
+                    std_test = self.agents[self.id].std[self.agents[self.id].subset[:, 0].astype(int), self.agents[self.id].subset[:, 1].astype(int)]
+                    self.agents[self.id].subset = self.agents[self.id].subset[std_test < 0.75]
+                    self.agents[self.id].subset = self.agents[self.id].subset[np.argsort(self.agents[self.id].subset[:, 2])]
 
-            print("calculating gradient...")
-            gradient_y, gradient_x = np.gradient(self.agents[self.id].heat.T, 1, 1)
 
-            gradient_x /= np.linalg.norm(gradient_x) + 1e-6
-            gradient_y /= np.linalg.norm(gradient_y) + 1e-6
-            print("got gradient")
+                if self.step == 0:
+                    self.agents[self.id].heat = np.array(utilities.normalize_mat(self.agents[self.id].combo_density))
+                    print("heat initialized")
 
-            # Update the agent
-            self.agents[self.id].grad = utilities.calculate_gradient_map(
-                self.param, self.agents[self.id], gradient_x, gradient_y, self.map
-            )
-            print("updated agent")
+                print("calculating ergodic metric...")
+                diff = utilities.normalize_mat(self.agents[self.id].combo_density) - utilities.normalize_mat(self.agents[self.id].coverage_density)
 
-            if len(self.agents[self.id].neighbors) > 0:
-                for neighbor in self.agents[self.id].neighbors:
-                    neighbor_agent = self.agents[neighbor]
-                    q_ij = np.linalg.norm(self.agents[self.id].x - neighbor_agent.x)**2
-                    p = 4 * (self.param.sens_range**2 - self.min_safe_range**2) * (q_ij - self.param.sens_range**2) * (agent.x - neighbor_agent.x) / \
-                        (q_ij - self.min_safe_range**2)**3
-                    # Control law, we want to move away from the neighbor
-                    self.agents[self.id].grad -= p
+                source = np.maximum(diff, 0) ** 2 # Eq. 13 - Source term
+                source = np.where(self.map == 0, source, 0)
+                self.agents[self.id].source = utilities.normalize_mat(source) * self.param.area # Eq. 14 - Source term scaled
 
-            # v_target and theta_target
-            k_target = 1
-            v_target = k_target * np.array([self.agents[self.id].grad[0], self.agents[self.id].grad[1]])
+                # ergodic_metric[step, agent.id] = np.linalg.norm(agent.source) * param.dt # Eq. 15 - Ergodic metric
 
-            theta_target = np.arctan2(self.agents[self.id].grad[1], self.agents[self.id].grad[0])
+                print("update current heat...")
+                current_heat = utilities.update_heat_optimized(
+                    self.agents[self.id].heat,
+                    self.agents[self.id].source,
+                    self.map,
+                    self.agents[self.id].local_cooling,
+                    self.param.dt,
+                    self.param.alpha,
+                    self.param.source_strength,
+                    self.param.beta,
+                    self.param.local_cooling,
+                    self.param.dx
+                )
 
-            u = self.agents[self.id].get_acceleration(v_target, theta_target, penalize_lateral=True)
-            self.agents[self.id].update(u)
+                self.agents[self.id].heat = current_heat.astype(np.float32)
 
-            # get linear and angular velocities
-            vel = self.agents[self.id].v
-            omega = self.agents[self.id].omega
-            print(f"desired v, w: {vel}, {omega}")
+                print("calculating gradient...")
+                gradient_y, gradient_x = np.gradient(self.agents[self.id].heat.T, 1, 1)
 
-            # convert to ROS message
-            msg = TwistStamped()
-            msg.header.stamp = rospy.Time.now()
-            msg.header.frame_id = "map"
-            msg.twist.linear.x = vel[0]
-            msg.twist.linear.y = vel[1]
-            # msg.twist.linear.z = 0.8 * (self.takeoff_pose.pose.position.z - self.current_altitude)
-            msg.twist.linear.z = 0.0
-            msg.twist.angular.z = omega
-            self.vel_pub.publish(msg)
+                gradient_x /= np.linalg.norm(gradient_x) + 1e-6
+                gradient_y /= np.linalg.norm(gradient_y) + 1e-6
+                print("got gradient")
+
+                # Update the agent
+                self.agents[self.id].grad = utilities.calculate_gradient_map(
+                    self.param, self.agents[self.id], gradient_x, gradient_y, self.map
+                )
+                print("updated agent")
+
+                if len(self.agents[self.id].neighbors) > 0:
+                    for neighbor in self.agents[self.id].neighbors:
+                        neighbor_agent = self.agents[neighbor]
+                        q_ij = np.linalg.norm(self.agents[self.id].x - neighbor_agent.x)**2
+                        p = 4 * (self.param.sens_range**2 - self.min_safe_range**2) * (q_ij - self.param.sens_range**2) * (self.agents[self.id].x - neighbor_agent.x) / \
+                            (q_ij - self.min_safe_range**2)**3
+                        # Control law, we want to move away from the neighbor
+                        self.agents[self.id].grad -= p
+
+                # v_target and theta_target
+                k_target = 1
+                v_target = k_target * np.array([self.agents[self.id].grad[0], self.agents[self.id].grad[1]])
+
+                theta_target = np.arctan2(self.agents[self.id].grad[1], self.agents[self.id].grad[0])
+
+                u = self.agents[self.id].get_acceleration(v_target, theta_target, penalize_lateral=True)
+                self.agents[self.id].update(u)
+
+                # get linear and angular velocities
+                vel = self.agents[self.id].v
+                omega = self.agents[self.id].omega
+                print(f"desired v, w: {vel}, {omega}")
+
+                # convert to ROS message
+                msg = TwistStamped()
+                msg.header.frame_id = "map"
+                msg.twist.linear.x = vel[0]
+                msg.twist.linear.y = vel[1]
+                # msg.twist.linear.z = 0.8 * (self.takeoff_pose.pose.position.z - self.current_altitude)
+                msg.twist.linear.z = 0.0
+                msg.twist.angular.z = omega
+                # self.vel_pub.publish(msg)
+
+                with self.lock:
+                    self.control_cmd = msg
+                    self.last_cmd_time = rospy.Time.now()
+                
+                self.step += 1
+
+                if self.step > self.param.nbDataPoints:
+                    rospy.signal_shutdown("Mission complete")
+                rospy.sleep(self.param.dt)
             
-
-
-            rospy.sleep(self.param.dt)
-            self.step += 1
-
-            if self.step > self.param.nbDataPoints:
-                rospy.signal_shutdown("Mission complete")
 
 
         
