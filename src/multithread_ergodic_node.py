@@ -22,6 +22,7 @@ from ergodic_control import models, utilities
 import rospy
 import rospkg
 from nav_msgs.msg import Odometry
+from nav_msgs.msg import Path
 from geometry_msgs.msg import TransformStamped
 from geometry_msgs.msg import Vector3Stamped
 from geometry_msgs.msg import PoseStamped
@@ -172,6 +173,13 @@ class ErgodicNode():
             rospy.Duration(1.0), 
             self.map_cb
         )
+        self.path_pub = rospy.Publisher(
+                "path",
+                Path,
+                queue_size=10
+                )
+        self.path_msg = Path()
+        self.path_msg.header.frame_id = "map"
 
         self.goal_density_pub = rospy.Publisher(
             "goal_density",
@@ -392,6 +400,7 @@ class ErgodicNode():
         self.last_cmd_time = rospy.Time.now()
 
         self.running = True
+        self.flying = False
         self.sender_thread.start()
         self.compute_thread.start()
 
@@ -400,22 +409,24 @@ class ErgodicNode():
         print("Initialization complete. Starting main loop...")
 
     def command_sender(self):
-        rate = rospy.Rate(50)
+        rate = rospy.Rate(10)
         timeout = rospy.Duration(0.1)
         zero_cmd = TwistStamped()
         zero_cmd.header.frame_id = "map"
 
         while not rospy.is_shutdown() and self.running:
-            with self.lock:
-                now = rospy.Time.now()
-                if now - self.last_cmd_time < timeout:
-                    cmd = self.control_cmd
-                else:
-                    cmd = zero_cmd
-                    # print("sending zero..")
-                cmd.header.stamp = now
+            if self.flying:
+                with self.lock:
+                    now = rospy.Time.now()
+                    if now - self.last_cmd_time < timeout:
+                        cmd = self.control_cmd
+                    else:
+                        cmd = zero_cmd
+                        # print("sending zero..")
+                    cmd.header.stamp = now
             
-            self.vel_pub.publish(cmd)
+                self.vel_pub.publish(cmd)
+            rate.sleep()
 
     def plot_results(self):
         # Plot mean and uncertainty of the GPR predictions
@@ -536,7 +547,7 @@ class ErgodicNode():
 
         # Update position and orientation
         self.agents[i].x = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y])
-        self.current_altitude = msg.pose.pose.position.z
+        # self.current_altitude = msg.pose.pose.position.z
         orientation = msg.pose.pose.orientation
         self.agents[i].theta = np.arctan2(
             2.0 * (orientation.z * orientation.w + orientation.x * orientation.y),
@@ -553,6 +564,14 @@ class ErgodicNode():
             if agent is not None and hasattr(agent, "mu"):
                 map_data = agent.mu.reshape(self.map.shape)
                 self.publish_map(map_data, self.mean_pred_pub)
+                self.path_msg.header.stamp = rospy.Time.now()
+                p = PoseStamped()
+                p.header.frame_id = "map"
+                p.header.stamp = rospy.Time.now()
+                p.pose.position.x = agent.x[0]
+                p.pose.position.y = agent.x[1]
+                self.path_msg.poses.append(p)
+                self.path_pub.publish(self.path_msg)
 
     def publish_map(self, map_data, pub):
         map_msg = OccupancyGrid()
@@ -578,9 +597,10 @@ class ErgodicNode():
             arm_cmd.value = True
 
             if self.mavros_state.mode != "OFFBOARD" and (rospy.Time.now() - self.last_request > rospy.Duration(2.0)):
-                if self.set_mode_client.call(offb_set_mode).mode_sent:
-                    rospy.loginfo("Offboard enabled")
-                self.last_request = rospy.Time.now()
+                if not self.flying:
+                    if self.set_mode_client.call(offb_set_mode).mode_sent:
+                        rospy.loginfo("Offboard enabled")
+                    self.last_request = rospy.Time.now()
             else:
                 if not self.mavros_state.armed and (rospy.Time.now() - self.last_request > rospy.Duration(2.0)):
                     if self.arming_client.call(arm_cmd).success:
@@ -593,6 +613,7 @@ class ErgodicNode():
                 self.local_pos_pub.publish(self.takeoff_pose)
                 self.t_start = rospy.Time.now().to_sec()
             else:
+                self.flying = True
                 if self.step % 10 == 0:
                     print(f"Step {self.step}")
                 print("agent in position: ", self.agents[self.id].x) 
@@ -728,13 +749,24 @@ class ErgodicNode():
                 omega = self.agents[self.id].omega
                 print(f"desired v, w: {vel}, {omega}")
 
+                # get current altitude
+                try:
+                    (pos, rot) = self.tf_listener.lookupTransform(
+                        f"uav{self.robot_id}/local_origin",
+                        f"uav{self.robot_id}/base_link",
+                        rospy.Time(0)
+                    )
+                    self.current_altitude = pos[2]
+                except (rospy.ServiceException, rospy.ROSException) as e:
+                    print("Error getting current altitude:", e)
+                    rospy.signal_shutdown("Transform not available")
                 # convert to ROS message
                 msg = TwistStamped()
                 msg.header.frame_id = "map"
                 msg.twist.linear.x = vel[0]
                 msg.twist.linear.y = vel[1]
-                # msg.twist.linear.z = 0.8 * (self.takeoff_pose.pose.position.z - self.current_altitude)
-                msg.twist.linear.z = 0.0
+                msg.twist.linear.z = 0.8 * (self.takeoff_pose.pose.position.z - self.current_altitude)
+                # msg.twist.linear.z = 0.0
                 msg.twist.angular.z = omega
                 # self.vel_pub.publish(msg)
 
