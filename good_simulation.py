@@ -181,30 +181,6 @@ kernel = (
 gpr = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=1, alpha=1e-5, normalize_y=True)
 
 gpr.kernel_ = kernel
-# # Precompute the GPR for faster simulations
-# preSamplesN = 500
-# preSamples = np.random.randint(0, len(free_cells), preSamplesN)
-# preSamples = np.hstack((free_cells[preSamples], goal_density[free_cells[preSamples][:, 0], free_cells[preSamples][:, 1]].reshape(-1, 1)))
-# preSamples = np.unique(preSamples, axis=0, return_index=False)
-
-# gpr.fit(preSamples[:, :2], preSamples[:, 2])
-
-# mu, std = gpr.predict(grid, return_std=True)
-
-# fig = plt.figure(figsize=(12, 5))
-# ax = fig.add_subplot(131)
-# ax.set_aspect('equal')
-# # Plot the mean
-# ax.contourf(grid_x, grid_y, mu.reshape(map.shape), cmap='RdPu', levels=10)
-# ax = fig.add_subplot(132)
-# ax.set_aspect('equal')
-# # Plot the std
-# ax.contourf(grid_x, grid_y, std.reshape(map.shape), cmap='binary', levels=10)
-# ax = fig.add_subplot(133)
-# ax.set_aspect('equal')
-# # Plot the goal density
-# ax.contourf(grid_x, grid_y, goal_density, cmap='RdPu', levels=10)
-# plt.show(block=True)
 
 """
 =========
@@ -257,6 +233,14 @@ local_shared_block = np.zeros((param.nbAgents, param.sens_range, param.sens_rang
 ergodic_metric = np.zeros((param.nbDataPoints, param.nbAgents), dtype=float)
 
 PLOT = False
+
+save_debug = True
+
+if save_debug:
+    debug_mu = np.zeros((param.nbDataPoints, *map.shape), dtype=float)
+    debug_std = np.zeros((param.nbDataPoints, *map.shape), dtype=float)
+    debug_combo_density = np.zeros((param.nbDataPoints, *map.shape), dtype=float)
+
 
 for step in range(param.nbDataPoints):
     if step // 10:
@@ -456,6 +440,11 @@ for step in range(param.nbDataPoints):
         theta_target = np.atan2(agent.grad[1], agent.grad[0])
 
         agent.track_velocity_and_heading(v_target, theta_target, penalize_lateral=True)
+
+        if save_debug and agent.id == 0:
+            debug_mu[step] = agent.mu.reshape(map.shape)
+            debug_std[step] = agent.std.reshape(map.shape)
+            debug_combo_density[step] = agent.combo_density.reshape(map.shape)
     
     if step % 1 == 0 and PLOT:
         ax.clear()
@@ -511,10 +500,14 @@ for step in range(param.nbDataPoints):
 import scipy.ndimage as ndimage
 ergodic_metric = ndimage.gaussian_filter1d(ergodic_metric, sigma=4, axis=0)
 
-
-# np.save('ergodic_metric_13.npy', ergodic_metric)
-# # Save the agents' data
-# np.save('agents_data_13.npy', [agent.x_hist for agent in agents])
+if save_debug:
+    np.save('video_ergodic_metric.npy', ergodic_metric)
+    # Save the agents' data
+    np.save('video_agents_data.npy', [agent.x_hist for agent in agents])
+    # Save the debug data
+    np.save('video_mu.npy', debug_mu)
+    np.save('video_std.npy', debug_std)
+    np.save('video_combo_density.npy', debug_combo_density)
 
 fig = plt.figure(figsize=(12, 5))
 ax = fig.add_subplot(111)

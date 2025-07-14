@@ -391,9 +391,6 @@ def agent_block(nbVarX, min_val, agent_radius):
     for i in range(num_rows):
         for j in range(num_cols):
             block[i, j] = rbf(center, np.array([j, i]), eps)
-    # we hope this value is close to zero 
-    print(f"Minimum element of the block: {np.min(block)}" +
-          " values smaller than this assumed as zero")
     return block
 
 def clamp_kernel_1d(x, low_lim, high_lim, kernel_size):
@@ -455,6 +452,189 @@ def bilinear_interpolation(grid, pos):
     # Interpolate on y-axis
     c = c01 * (1 - yd) + c11 * yd
     return c
+
+# def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid):
+#     """
+#     Calculate movement direction of the agent considering heading,
+#     the gradient of the field, and wall avoidance.
+#     """
+#     x, y = agent.x.astype(int)
+#     heading_vector = np.array([np.cos(agent.theta), np.sin(agent.theta)])
+#     gradient = np.zeros(2)
+
+#     if 0 <= x < param.width and 0 <= y < param.height:
+#         gradient[0] = bilinear_interpolation(gradient_x, agent.x)
+#         gradient[1] = bilinear_interpolation(gradient_y, agent.x)
+
+#     # Store the original gradient magnitude for later use
+#     original_magnitude = np.linalg.norm(gradient)
+
+#     """
+#     Calculate the wall avoidance effect based on nearby obstacles.
+#     """
+#     # Use a smaller kernel for wall avoidance (independent of coverage block size)
+#     wall_avoidance_radius = min(3, param.kernel_size // 4)  # Much smaller radius
+#     wall_effect = np.zeros(2)
+
+#     # Generate a grid of relative coordinates within the smaller kernel
+#     dx, dy = np.meshgrid(
+#         np.arange(-wall_avoidance_radius, wall_avoidance_radius + 1),
+#         np.arange(-wall_avoidance_radius, wall_avoidance_radius + 1),
+#         indexing='ij'
+#     )
+
+#     # Calculate absolute positions
+#     next_x = x + dx
+#     next_y = y + dy
+
+#     # Mask valid positions within bounds
+#     valid_mask = (
+#         (0 <= next_x) & (next_x < param.width) &
+#         (0 <= next_y) & (next_y < param.height)
+#     )
+
+#     # Mask positions corresponding to obstacles
+#     obstacle_mask = occupancy_grid[next_x[valid_mask], next_y[valid_mask]] == 1
+
+#     # Compute distances for valid positions
+#     dx_valid = dx[valid_mask]
+#     dy_valid = dy[valid_mask]
+#     distances = np.sqrt(dx_valid**2 + dy_valid**2)
+#     distances[distances == 0] = np.inf
+
+#     # Use distance-based influence (stronger for closer obstacles)
+#     influence = param.wall_boundary_gradient / (distances + 0.1)  # Avoid division by zero
+
+#     # Compute direction away from obstacles
+#     direction_x = -dx_valid / distances
+#     direction_y = -dy_valid / distances
+
+#     # Apply obstacle mask
+#     direction_x *= obstacle_mask
+#     direction_y *= obstacle_mask
+#     influence *= obstacle_mask
+
+#     # Sum up contributions
+#     wall_effect[0] = np.sum(influence * direction_x)
+#     wall_effect[1] = np.sum(influence * direction_y)
+
+#     # Scale wall effect to be proportional to obstacle proximity
+#     wall_magnitude = np.linalg.norm(wall_effect)
+#     if wall_magnitude > 0:
+#         # Scale wall effect relative to gradient magnitude
+#         max_wall_effect = 0.3 * max(original_magnitude, 0.1)  # Limit wall effect
+#         wall_effect = wall_effect * min(max_wall_effect / wall_magnitude, 1.0)
+
+#     # Combine gradient and wall effect additively (don't decompose into components)
+#     combined_gradient = gradient + wall_effect
+
+#     # Reduce boundary effects - only apply near edges and with reduced strength
+#     boundary_margin = 2  # Smaller margin
+#     boundary_strength = param.boundary_gradient * 0.1  # Much weaker
+
+#     # if y <= boundary_margin:
+#     #     combined_gradient[1] += boundary_strength
+#     # elif y >= param.height - boundary_margin:
+#     #     combined_gradient[1] -= boundary_strength
+#     # if x <= boundary_margin:
+#     #     combined_gradient[0] += boundary_strength
+#     # elif x >= param.width - boundary_margin:
+#     #     combined_gradient[0] -= boundary_strength
+
+#     # Normalize only if the gradient is very large (preserve directionality)
+#     gradient_magnitude = np.linalg.norm(combined_gradient)
+#     combined_gradient = combined_gradient / (gradient_magnitude + 1e-10) * max(gradient_magnitude, 0.1)
+
+#     return combined_gradient
+
+def calculate_gradient_map_v2(param, agent, gradient_x, gradient_y, occupancy_grid):
+    """
+    Calculate movement direction of the agent considering heading,
+    the gradient of the field, and wall avoidance.
+    """
+    x, y = agent.x.astype(int)
+    heading_vector = np.array([np.cos(agent.theta), np.sin(agent.theta)])
+    gradient = np.zeros(2)
+
+    if 0 <= x < param.width and 0 <= y < param.height:
+        gradient[0] = bilinear_interpolation(gradient_x, agent.x)
+        gradient[1] = bilinear_interpolation(gradient_y, agent.x)
+
+    """
+    Calculate the wall avoidance effect based on nearby obstacles.
+    """
+    kernel_radius = param.kernel_size // 2
+    wall_effect = np.zeros(2)
+
+    # Generate a grid of relative coordinates within the kernel
+    dx, dy = np.meshgrid(
+        np.arange(-kernel_radius, kernel_radius + 1),
+        np.arange(-kernel_radius, kernel_radius + 1),
+        indexing='ij'
+    )
+
+    # Calculate absolute positions
+    next_x = x + dx
+    next_y = y + dy
+
+    # Mask valid positions within bounds
+    valid_mask = (
+        (0 <= next_x) & (next_x < param.width) &
+        (0 <= next_y) & (next_y < param.height)
+    )
+
+    # Mask positions corresponding to obstacles
+    obstacle_mask = occupancy_grid[next_x[valid_mask], next_y[valid_mask]] == 1
+
+    # Compute distances for valid positions
+    dx = dx[valid_mask]
+    dy = dy[valid_mask]
+    # Compute distances and avoid division by zero
+    distances = np.sqrt(dx**2 + dy**2)
+    distances[distances == 0] = np.inf  # Prevent division by zero
+
+    # Compute influence for obstacles
+    influence = param.wall_boundary_gradient * np.exp(-distances**2 / (2 * kernel_radius**2))
+
+    # Compute direction away from obstacles
+    direction_x = -dx / distances
+    direction_y = -dy / distances
+
+    # Apply mask to influence and direction
+    direction_x *= obstacle_mask
+    direction_y *= obstacle_mask
+    influence *= obstacle_mask
+
+    # Sum up contributions
+    wall_effect[0] = np.sum(influence * direction_x)
+    wall_effect[1] = np.sum(influence * direction_y)
+
+    # Decompose wall effect into parallel and perpendicular components
+    parallel_effect = np.dot(wall_effect, heading_vector) * heading_vector
+    perpendicular_effect = wall_effect - parallel_effect
+
+    # Scale perpendicular effect to reduce sharp turns
+    perpendicular_scaling = 0.5  # Adjust sensitivity
+    wall_effect = (1 - perpendicular_scaling) * parallel_effect + perpendicular_scaling * perpendicular_effect
+
+    # Combine interpolated gradient and wall effect
+    gradient += (wall_effect * 0.1)
+
+    # if y <= param.kernel_size // 2:
+    #     gradient[1] += param.boundary_gradient
+    # elif y >= param.height - param.kernel_size // 2:
+    #     gradient[1] -= param.boundary_gradient
+    # if x <= param.kernel_size // 2:
+    #     gradient[0] += param.boundary_gradient
+    # elif x >= param.width - param.kernel_size // 2:
+    #     gradient[0] -= param.boundary_gradient
+
+    # Normalize the resulting gradient to prevent erratic movements
+    norm = np.linalg.norm(gradient)
+    if norm > 0:
+        gradient /= norm
+
+    return gradient
 
 def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid):
     """
@@ -527,7 +707,7 @@ def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid)
     wall_effect = (1 - perpendicular_scaling) * parallel_effect + perpendicular_scaling * perpendicular_effect
 
     # Combine interpolated gradient and wall effect
-    gradient += wall_effect
+    gradient += (wall_effect)
 
     if y <= param.kernel_size // 2:
         gradient[1] += param.boundary_gradient
@@ -581,7 +761,7 @@ def draw_fov(pos, theta, fov, fov_depth):
     return np.array(fov_points)
 
 
-def draw_fov_arc(pos, theta, fov, fov_depth, num_points=50):
+def draw_fov_arc(pos, theta, fov_grad, fov_depth, num_points=50):
     """
     This function returns a list of points along the arc that describes the field of view.
     
@@ -596,7 +776,7 @@ def draw_fov_arc(pos, theta, fov, fov_depth, num_points=50):
     np.array: A numpy array of points representing the arc of the field of view in 2D space.
     """
     # Convert FOV from degrees to radians
-    fov_rad = np.radians(fov)
+    fov_rad = np.radians(fov_grad)
     
     # Calculate the angles for the left and right FOV boundaries
     left_angle = theta + fov_rad / 2
@@ -709,9 +889,10 @@ def fov_coverage_block(points, fov_array, fov_depth):
     # Find the center of the FOV
     fov_center = np.mean(fov_array, axis=0)
 
-    # Define a simple Gaussian distribution around the center of the FOV
-    prob = np.exp(-np.linalg.norm(points - fov_center, axis=1) / (fov_depth / 3))
+    eps = 1.0 / fov_depth  # shape parameter of the RBF (supposed to be squared)
 
+    # Define a simple Gaussian distribution around the center of the FOV
+    prob = np.exp(-(np.linalg.norm(points - fov_center, axis=1) * eps) ** 2)
 
     return prob
 
@@ -997,7 +1178,7 @@ def gp_predict(X_train: np.ndarray,
         std: Predicted standard deviation (n_test,).
     """
     # Compute the training kernel matrix
-    K = kernel(X_train) * D * T + np.eye(X_train.shape[0]) * 1e-8  # Add small noise for numerical stability
+    K = kernel(X_train) * T * D + np.eye(X_train.shape[0]) * 1e-8  # Add small noise for numerical stability
     L = cholesky(K, lower=True, check_finite=False)
 
     # Compute alpha = (L.T @ L)^-1 @ y_train_normalized
@@ -1005,7 +1186,7 @@ def gp_predict(X_train: np.ndarray,
     alpha = solve_triangular(L.T, alpha, lower=False)
 
     # Kernel between training and test points
-    K_s = kernel(X_train, X_test) * d * t  # Cross-covariance between train and test
+    K_s = kernel(X_train, X_test) * t * d # Cross-covariance between train and test
     # Mean prediction
     mu = K_s.T @ alpha
 
@@ -1169,6 +1350,8 @@ def compute_combo(
     mu = min_max_normalize(mu.reshape(map.shape))
     std = min_max_normalize(std.reshape(map.shape))
 
+    # std[std < 0.3] = 0  # Set small std to zero to avoid noise
+
     combo = (np.exp(mu)-1) + (np.exp(std) - 1)
     
     combo_density = np.where(map == 0, combo, 0) # Only keep the density on free cells
@@ -1215,9 +1398,6 @@ def share_samples(agents, map, connectivity_r, adjacency_matrix):
         for neighbor_id in agent.neighbors:
             adjacency_matrix[agent.id, neighbor_id] = 1
 
-        if agent.neighbors:
-            all_samples = np.vstack([agents[neighbor_id].subset for neighbor_id in agent.neighbors])
-            agent.subset = np.unique(np.vstack([agent.subset, all_samples]), axis=0)
 
     return adjacency_matrix
 
@@ -1234,13 +1414,12 @@ def compute_spatio_decay_matrix(spatial_data: np.ndarray, spatial_decay: float, 
         D: (N, N) spatial decay matrix where D[i, j] = exp(-‖x_i - x_j‖ / λ_s)
         d: (N, 1) decay vector where d[i] = exp(-‖x_i - x_ref‖ / λ_s)
     """
-    from scipy.spatial.distance import cdist
 
     # Pairwise Euclidean distances
     dists = cdist(spatial_data, spatial_data, metric='euclidean')
     D = np.exp(-dists / spatial_decay)
 
-    # Use last sample as reference (for cross-covariance weighting)
+    # Use last sample as reference 
     ref = spatial_data[-1]
     d_single = cdist(spatial_data, ref.reshape(-1, 2), metric='euclidean')
     d = np.exp(-d_single / spatial_decay)
@@ -1270,31 +1449,73 @@ def compute_temporal_decay_matrix(temporal_data: np.ndarray, t_actual: float, ti
 
     return T, t
 
-
-
-def compute_spatio_decay_vector(spatial_test: np.ndarray, ref_point: np.ndarray, spatial_decay: float) -> np.ndarray:
+def compute_spatio_decay_matrix_new(spatial_data: np.ndarray, spatial_decay: float):
     """
-    Spatial decay vector for test-test data.
+
+
+    Spatial decay matrix for train-train data.
+
+
     Args:
-        spatial_test: (M, d) spatial coordinates of test samples.
-        ref_point: (d,) reference spatial position (e.g., current agent position).
-        spatial_decay: spatial decay length scale.
+
+
+        spatial_data: (N, d) spatial coordinates of training samples.
+
+
+        spatial_decay: spatial decay length scale (lambda_s).
+
+
     Returns:
-        (M,) spatial decay vector.
-    """
-    sq_dists = np.sum((spatial_test - ref_point[None, :]) ** 2, axis=1)
-    return np.exp(-sq_dists / (2 * spatial_decay**2))
 
 
-def compute_temporal_decay_vector(temporal_test: np.ndarray, ref_time: float, time_decay: float) -> np.ndarray:
+        (N, N) decay matrix.
+
+
     """
-    Temporal decay vector for test-test data.
+
+
+    norms = np.linalg.norm(spatial_data, axis=1)
+
+
+    D = (1-spatial_decay)**(np.abs(norms[:, None] - norms))
+
+
+    d = ((1-spatial_decay)**(np.linalg.norm(spatial_data - spatial_data[-1], axis=1))).reshape(-1, 1)
+
+
+    return D, d
+
+
+def compute_temporal_decay_matrix_new(temporal_data: np.ndarray, t_actual: np.float16, time_decay: float):
+    """
+
+
+    Temporal decay matrix for train-train data.
+
+
     Args:
-        temporal_test: (M,) time stamps of test samples.
-        ref_time: scalar, reference time (e.g., current time).
-        time_decay: temporal decay length scale.
+
+
+        temporal_data: (N,) time stamps of training samples.
+
+
+        time_decay: temporal decay length scale (lambda_t).
+
+
     Returns:
-        (M,) temporal decay vector.
+
+
+        (N, N) decay matrix.
+
+
     """
-    sq_diffs = (temporal_test - ref_time) ** 2
-    return np.exp(-sq_diffs / (2 * time_decay**2))
+
+    t = (1 - time_decay) ** np.abs(t_actual - temporal_data)
+
+    t = t.reshape(-1)
+
+    T = np.array([[t[i] * t[j] if i != j else 1 for j in range(len(temporal_data))] for i in range(len(temporal_data))])
+
+    t = t.reshape(-1, 1)
+
+    return T, t

@@ -1,3 +1,6 @@
 .env/
 __pycache__/
 *.mp4
+*.npy
+*.gif
+*.pdf

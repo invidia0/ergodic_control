@@ -151,8 +151,8 @@ class DoubleIntegratorAgent:
         self,
         x,  # initial position [x, y]
         theta=0,  # initial heading
-        max_dx=1,  # maximum velocity
-        max_ddx=0.2,  # maximum acceleration
+        max_dx=2,  # maximum velocity
+        max_ddx=0.5,  # maximum acceleration
         max_dtheta=np.pi / 4,  # maximum angular velocity
         max_ddtheta=np.pi / 8,  # maximum angular acceleration
         dt=1,  # time step
@@ -215,7 +215,7 @@ class DoubleIntegratorAgent:
         v_target_world,
         theta_target=None,
         kp_lin=1.0,
-        kp_lat=0.1,
+        kp_lat=0.5,
         kp_theta=2.0,
         kd_theta=1.0,
         penalize_lateral=True,
