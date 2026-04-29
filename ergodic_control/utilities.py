@@ -14,6 +14,8 @@ from numba import njit, prange
 from scipy.spatial import cKDTree
 from skimage.draw import line
 from scipy.spatial.distance import cdist
+import numba
+from numba import njit, prange
 
 @njit(parallel=True, fastmath=True)
 def convolve_2d(image, kernel):
@@ -641,13 +643,15 @@ def calculate_gradient_map(param, agent, gradient_x, gradient_y, occupancy_grid)
     Calculate movement direction of the agent considering heading,
     the gradient of the field, and wall avoidance.
     """
-    x, y = agent.x.astype(int)
+    # x, y = agent.x.astype(int)
+    adjusted_position = agent.x / param.dx
+    x, y = adjusted_position.astype(int)
     heading_vector = np.array([np.cos(agent.theta), np.sin(agent.theta)])
     gradient = np.zeros(2)
 
     if 0 <= x < param.width and 0 <= y < param.height:
-        gradient[0] = bilinear_interpolation(gradient_x, agent.x)
-        gradient[1] = bilinear_interpolation(gradient_y, agent.x)
+        gradient[0] = bilinear_interpolation(gradient_x, np.array([x, y]))
+        gradient[1] = bilinear_interpolation(gradient_y, np.array([x, y]))
 
     """
     Calculate the wall avoidance effect based on nearby obstacles.
@@ -1519,3 +1523,53 @@ def compute_temporal_decay_matrix_new(temporal_data: np.ndarray, t_actual: np.fl
     t = t.reshape(-1, 1)
 
     return T, t
+
+# Residuals w and Jacobians J in spectral domain
+def f_ergodic(x, param):
+	[xx,yy] = np.mgrid[range(param.nbFct),range(param.nbFct)]
+
+	phi1 = np.zeros((param.nbData,param.nbFct,2))
+	dphi1 = np.zeros((param.nbData,param.nbFct,2))
+
+	x1_s = x[0::2]
+	x2_s = x[1::2]
+
+	phi1[:,:,0] = np.cos(x1_s @ param.kk1.T) / param.L
+	dphi1[:,:,0] = - np.sin(x1_s @ param.kk1.T) * np.matlib.repmat(param.kk1.T,param.nbData,1) / param.L
+	
+	phi1[:,:,1] = np.cos(x2_s @ param.kk1.T) / param.L
+	dphi1[:,:,1] = - np.sin(x2_s @ param.kk1.T) * np.matlib.repmat(param.kk1.T,param.nbData,1) / param.L
+
+	phi = phi1[:,xx.flatten(),0] * phi1[:,yy.flatten(),1]
+
+	dphi = np.zeros((param.nbData*param.nbVarX,param.nbFct**2))
+	dphi[0::2,:] = dphi1[:,xx.flatten(),0] * phi1[:,yy.flatten(),1]
+	dphi[1::2,:] = phi1[:,xx.flatten(),0] * dphi1[:,yy.flatten(),1]
+
+	w = (np.sum(phi,axis=0) / param.nbData).reshape((param.nbFct**2,1))
+	J = dphi.T / param.nbData
+	return w, J
+
+@numba.njit(parallel=True, cache=True)
+def compute_voronoi_partitioning(xy_grid, robot_positions, robot_range):
+    n_points = xy_grid.shape[0]
+    n_robots = robot_positions.shape[0]
+    
+    # Compute squared distances manually (faster, Numba-compatible)
+    dists_sq = np.empty((n_points, n_robots))
+    for i in numba.prange(n_points):
+        for j in range(n_robots):
+            dx = xy_grid[i, 0] - robot_positions[j, 0]
+            dy = xy_grid[i, 1] - robot_positions[j, 1]
+            dists_sq[i, j] = dx * dx + dy * dy
+    
+    closest = np.argmin(dists_sq, axis=1)
+    
+    masks = []
+    range_sq = robot_range * robot_range
+    for i in range(n_robots):
+        mask = (closest == i)
+        mask &= (dists_sq[:, i] <= range_sq)
+        masks.append(mask)
+    
+    return masks

@@ -259,3 +259,49 @@ class DoubleIntegratorAgent:
         # Apply control
         u = np.hstack([a_world, alpha])
         self.update(u)
+
+class DoubleIntegratorAgentNoHeading:
+    def __init__(
+        self,
+        x,  # initial position [x, y]
+        theta=0,  # initial heading (ignored)
+        max_dx=2,  # maximum velocity
+        max_ddx=0.5,  # maximum acceleration
+        dt=1,  # time step
+        id=0,  # agent id
+    ):
+        self.x = np.array(x, dtype=np.float64)  # Position [x, y]
+        self.v = np.array([0.0, 0.0], dtype=np.float64)  # Velocity [vx, vy]
+        self.theta = theta
+
+        self.max_dx = max_dx  # Maximum linear velocity
+        self.max_ddx = max_ddx  # Maximum linear acceleration
+
+        self.dt = dt  # Time step
+        self.id = id  # Agent ID
+
+        self.x_hist = np.empty((0, 2))  # History of states [x, y]
+
+    def update(self, v_target):
+        """
+        Update the agent state using desired velocity in world frame.
+        v_target: desired velocity [vx, vy] in world frame
+        """
+        a = (v_target - self.v) / self.dt
+
+        # Clamp linear acceleration
+        norm_a = np.linalg.norm(a)
+        if norm_a > self.max_ddx:
+            a = self.max_ddx * a / norm_a
+
+        # Update velocity and clamp
+        self.v += a * self.dt
+        speed = np.linalg.norm(self.v)
+        if speed > self.max_dx:
+            self.v = self.max_dx * self.v / speed
+
+        # Update position
+        self.x += self.v * self.dt
+
+        # Log state
+        self.x_hist = np.vstack((self.x_hist, [self.x[0], self.x[1]]))
