@@ -5,7 +5,7 @@ import sys
 import csv
 
 # Load a map and dimensionally augment it
-with open(os.path.join(os.path.dirname(__file__), 'complexMap.csv')) as f:
+with open(os.path.join(os.path.dirname(__file__), 'simpleMap_obs2.csv')) as f:
     reader = csv.reader(f)
     data = np.array(list(reader), dtype=float)
 
@@ -17,7 +17,7 @@ dx = 0.5
 map = np.kron(map, np.ones((int(1/dx), int(1/dx))))
 # Flip the map
 map = np.flip(map, axis=0)
-np.save(os.path.join(os.path.dirname(__file__), 'complexMap_05.npy'), map)
+np.save(os.path.join(os.path.dirname(__file__), 'simpleMap_obs2.npy'), map)
 # Create a figure and axis
 fig, ax = plt.subplots()
 ax.set_aspect('equal', adjustable='box')
